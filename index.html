@@ -1,0 +1,2149 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spor Toto Haftalık Analiz</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
+    <!-- Firebase CDN -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global Firebase variables for use in inline script
+        window.firebaseApp = null;
+        window.db = null;
+        window.auth = null;
+        window.userId = null;
+        window.appId = null;
+        window.isAuthReady = false; // Add this flag to track auth readiness
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            window.appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
+            if (Object.keys(firebaseConfig).length > 0 && firebaseConfig.apiKey) { // Ensure apiKey exists
+                window.firebaseApp = initializeApp(firebaseConfig);
+                window.db = getFirestore(window.firebaseApp);
+                window.auth = getAuth(window.firebaseApp);
+
+                // Listen for auth state changes
+                onAuthStateChanged(window.auth, async (user) => {
+                    if (user) {
+                        window.userId = user.uid;
+                        console.log("Firebase: User is signed in:", window.userId);
+                    } else {
+                        // If no user, try to sign in anonymously if not already authenticated
+                        if (!window.userId || window.userId === 'anonymous') { // Prevent re-signing in if already anon
+                            try {
+                                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                                     await signInWithCustomToken(window.auth, __initial_auth_token);
+                                     window.userId = window.auth.currentUser.uid;
+                                } else {
+                                     await signInAnonymously(window.auth);
+                                     window.userId = window.auth.currentUser.uid;
+                                }
+                                console.log("Firebase: Signed in anonymously or with custom token:", window.userId);
+                            } catch (error) {
+                                console.error("Firebase authentication error:", error);
+                                window.userId = crypto.randomUUID(); // Fallback to random ID if auth fails
+                            }
+                        }
+                    }
+                    window.isAuthReady = true; // Set flag when auth state is determined
+                    document.dispatchEvent(new Event('firebaseAuthReady')); // Custom event for when auth is ready
+                    updateAuthUI(user); // Update UI based on auth state
+                });
+            } else {
+                console.warn("Firebase config not found or API key is missing. User coupons will not be saved/loaded via Firebase.");
+                window.userId = crypto.randomUUID(); // Fallback to random ID if no config
+                window.isAuthReady = true; // Auth is "ready" in the sense that it won't be used
+                document.dispatchEvent(new Event('firebaseAuthReady'));
+                updateAuthUI(null); // No Firebase auth, show as logged out
+            }
+        });
+
+        // Expose functions for inline script
+        window.signInWithEmailAndPassword = signInWithEmailAndPassword;
+        window.createUserWithEmailAndPassword = createUserWithEmailAndPassword;
+        window.signOutFirebase = signOut; // Renamed to avoid conflict with window.signOut
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0B1C2A;
+            padding-bottom: 4rem; 
+        }
+        @media (min-width: 768px) {
+            body {
+                padding-bottom: 0;
+            }
+        }
+        .chart-container {
+            position: relative;
+            width: 100%;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
+            height: 300px; 
+            max-height: 400px;
+        }
+        @media (min-width: 768px) {
+            .chart-container {
+                height: 350px;
+            }
+        }
+        .text-glow {
+            text-shadow: 0 0 8px rgba(255, 255, 255, 0.3), 0 0 12px rgba(1, 148, 154, 0.5);
+        }
+        .card {
+            background-color: #004369;
+            border: 1px solid #01949A; 
+        }
+        .flow-step {
+            border-color: #01949A;
+            background-color: rgba(1, 148, 154, 0.1);
+        }
+        .flow-arrow {
+            color: #01949A;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0, 0, 0, 0.7);
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+            box-sizing: border-box;
+        }
+        .modal-content {
+            background-color: #004369;
+            margin: auto;
+            padding: 1.5rem;
+            border: 1px solid #01949A;
+            border-radius: 0.75rem;
+            width: 100%;
+            max-width: 600px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5);
+            position: relative;
+            color: #E5DDC8;
+        }
+        .close-button {
+            color: #E5DDC8;
+            position: absolute;
+            top: 0.75rem;
+            right: 1rem;
+            font-size: 2rem;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #DB1F48;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 2s linear infinite;
+            margin: 2rem auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        /* Unified prediction badge style */
+        .prediction-badge {
+            background-color: #F4A261; /* Sarı kutu */
+            color: #0B1C2A; /* Siyah yazı */
+            font-weight: bold;
+            border-radius: 0.25rem; /* Hafif yuvarlak köşeler */
+            padding: 0.25rem 0.5rem; /* İç boşluk */
+            display: inline-block; /* Elementin içeriğine göre genişlemesi için */
+            min-width: 40px; /* Minimum genişlik */
+            text-align: center; /* Metni ortala */
+        }
+
+        .ai-button {
+            @apply flex items-center justify-center px-4 py-2 mt-4 rounded-lg font-semibold text-white transition-all duration-300;
+            background-color: #01949A;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            border: 1px solid #01949A;
+        }
+
+        .ai-button:hover {
+            background-color: #02B8BF;
+            box-shadow: 0 6px 10px rgba(0, 0, 0, 0.2);
+            transform: translateY(-2px);
+        }
+
+        .ai-button:active {
+            transform: translateY(0);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        .empty-cell {
+            background-color: rgba(229, 221, 200, 0.05);
+            color: transparent;
+            border: 1px dashed rgba(229, 221, 200, 0.2);
+            min-width: 40px;
+            min-height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: background-color 0.2s, border-color 0.2s;
+        }
+        .empty-cell:hover {
+            background-color: rgba(229, 221, 200, 0.1);
+            border-color: rgba(229, 221, 200, 0.4);
+        }
+        .selected-prediction {
+            color: #E5DDC8;
+            background-color: rgba(219, 31, 72, 0.8);
+            border-color: #DB1F48;
+            font-weight: bold;
+        }
+        .selected-prediction.double {
+            background-color: rgba(244, 162, 97, 0.8);
+            border-color: #F4A261;
+            color: #0B1C2A;
+        }
+        .selected-prediction.triple {
+            background-color: rgba(42, 157, 143, 0.8);
+            border-color: #2A9D8F;
+        }
+        .form-dot {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin: 0 2px;
+            vertical-align: middle;
+        }
+        .form-win { background-color: #2A9D8F; }
+        .form-draw { background-color: #F4A261; }
+        .form-loss { background-color: #DB1F48; }
+        .form-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .form-list li {
+            margin-bottom: 6px;
+            font-size: 0.9rem;
+            color: #E5DDC8;
+        }
+        .form-list li span.score {
+            font-weight: bold;
+            color: #F4A261;
+        }
+        .form-list li span.result-text {
+            margin-left: 5px;
+            font-weight: bold;
+        }
+        .form-list li span.result-G { color: #2A9D8F; }
+        .form-list li span.result-B { color: #F4A261; }
+        .form-list li span.result-M { color: #DB1F48; }
+        .player-analyze-btn {
+            @apply ml-2 px-2 py-0.5 text-xs rounded-md bg-[#01949A] text-white cursor-pointer hover:bg-[#02B8BF] transition-colors duration-200;
+            white-space: nowrap;
+        }
+        .player-analysis-section {
+            border-top: 1px solid rgba(1, 148, 154, 0.3);
+            padding-top: 1rem;
+            margin-top: 1rem;
+        }
+        .status-red {
+            color: #DB1F48;
+            font-weight: bold;
+        }
+        .modal h2 {
+            font-size: 1.75rem;
+            font-weight: 800;
+            color: #DB1F48;
+            text-shadow: 0 0 5px rgba(219, 31, 72, 0.4);
+        }
+        .modal h3 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #01949A;
+            padding-bottom: 0.25rem;
+            border-bottom: 2px solid #01949A;
+            display: inline-block;
+            margin-bottom: 0.75rem;
+        }
+        .modal h3.missing-players-heading {
+             color: #F4A261;
+             border-bottom-color: #F4A261;
+        }
+        .modal h4 {
+            font-size: 1rem;
+            font-weight: 600;
+            color: #E5DDC8;
+            padding-bottom: 0.125rem;
+            border-bottom: 1px solid rgba(229, 221, 200, 0.3);
+            display: inline-block;
+            margin-bottom: 0.5rem;
+        }
+        .player-stats-detail {
+            font-size: 0.75rem;
+            color: rgba(229, 221, 200, 0.7);
+            margin-left: 0.75rem;
+            display: block;
+            margin-top: -0.25rem;
+            margin-bottom: 0.5rem;
+        }
+        .match-stats {
+            font-size: 0.8rem;
+            color: #E5DDC8;
+            margin-left: 0.5rem;
+            display: block;
+            line-height: 1.4;
+        }
+        .match-stats strong {
+            color: #01949A;
+            font-weight: 600;
+        }
+        .location-icon {
+            font-size: 0.8rem;
+            color: #2A9D8F;
+            margin-left: 5px;
+            font-weight: bold;
+        }
+        .location-icon.away {
+            color: #F4A261;
+        }
+        .modal-info-item {
+            margin-bottom: 0.75rem;
+            font-size: 0.9rem;
+            color: #E5DDC8;
+        }
+        .modal-info-item strong {
+            color: #01949A;
+            font-weight: 600;
+        }
+        .input-field {
+            @apply w-full p-2 rounded-md bg-[#002840] border border-[#01949A] text-[#E5DDC8] placeholder-[#E5DDC8]/50 focus:ring-2 focus:ring-[#DB1F48] focus:border-transparent outline-none;
+        }
+        .auth-buttons {
+            @apply flex gap-2 mt-4;
+        }
+        .auth-button {
+            @apply flex-1 px-4 py-2 rounded-lg font-semibold text-white transition-all duration-300;
+        }
+        .auth-button.login {
+            background-color: #01949A;
+            border: 1px solid #01949A;
+        }
+        .auth-button.login:hover {
+            background-color: #02B8BF;
+        }
+        .auth-button.signup {
+            background-color: #F4A261;
+            color: #0B1C2A;
+            border: 1px solid #F4A261;
+        }
+        .auth-button.signup:hover {
+            background-color: #E99150;
+        }
+        .auth-button.logout {
+            background-color: #DB1F48;
+            border: 1px solid #DB1F48;
+        }
+        .auth-button.logout:hover {
+            background-color: #CC1C42;
+        }
+        .auth-info {
+            @apply text-sm text-[#E5DDC8]/70 mt-2 text-center;
+        }
+        .logged-in-user {
+            @apply text-sm font-bold text-[#2A9D8F];
+        }
+    </style>
+</head>
+<body class="text-[#E5DDC8]">
+
+    <div class="container mx-auto p-4 sm:p-6 md:p-8">
+
+        <header class="text-center mb-8 sm:mb-10 md:mb-12">
+            <h1 class="text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-black mb-2 text-glow uppercase">Spor Toto Haftanın Analizi</h1>
+            <p class="text-md sm:text-lg md:text-xl max-w-3xl mx-auto text-[#E5DDC8]/80">
+                Bu haftanın Spor Toto bülteni, FIFA Kulüpler Dünya Kupası'ndan ulusal liglere uzanan geniş bir yelpazede, veri odaklı tahminler ve derinlemesine analizler sunuyor. Artık belirsiz maçlar için çiftli ve üçlü seçimler de mevcut!
+            </p>
+        </header>
+
+        <main class="space-y-8 sm:space-y-10 md:space-y-12">
+            <!-- User Authentication Section -->
+            <section id="user-auth">
+                <div class="card rounded-xl shadow-2xl p-4 sm:p-6 md:p-8">
+                    <h2 class="text-xl sm:text-2xl md:text-3xl font-bold mb-4">Kullanıcı Girişi ve Kayıt</h2>
+                    <div id="auth-form-section">
+                        <div class="mb-4">
+                            <label for="emailInput" class="block text-sm font-semibold mb-2 text-[#E5DDC8]">E-posta / Telefon Numarası</label>
+                            <input type="text" id="emailInput" placeholder="E-posta adresinizi girin" class="input-field">
+                        </div>
+                        <div class="mb-4">
+                            <label for="passwordInput" class="block text-sm font-semibold mb-2 text-[#E5DDC8]">Şifre</label>
+                            <input type="password" id="passwordInput" placeholder="Şifrenizi girin" class="input-field">
+                        </div>
+                        <div class="auth-buttons">
+                            <button id="loginBtn" class="auth-button login">Giriş Yap</button>
+                            <button id="signupBtn" class="auth-button signup">Kaydol</button>
+                        </div>
+                    </div>
+                    <div id="auth-status-section" class="hidden">
+                        <p class="auth-info">Hoş Geldiniz, <span id="currentUserId" class="logged-in-user"></span>!</p>
+                        <button id="logoutBtn" class="auth-button logout">Çıkış Yap</button>
+                    </div>
+                    <p class="auth-info mt-4">Kupon verileriniz, oturum açtığınızda otomatik olarak kaydedilir ve yüklenebilir.</p>
+                </div>
+            </section>
+            <!-- End User Authentication Section -->
+
+            <section id="anatomy">
+                <div class="card rounded-xl shadow-2xl p-4 sm:p-6 md:p-8">
+                    <h2 class="text-xl sm:text-2xl md:text-3xl font-bold mb-4">Bültenin Anatomisi: Lig Dağılımı</h2>
+                    <p class="mb-4 sm:mb-6 text-sm sm:text-base text-[#E5DDC8]/80">
+                        Bu haftaki bülten, 4 farklı turnuva ve ligden 15 maçı kapsıyor. Maçların üçte biri, farklı kıtalardan takımları bir araya getiren ve bu nedenle tahmin edilmesi daha zor olan FIFA Kulüpler Dünya Kupası'na ait. Bu dağılım, kupon stratejisini belirlemede kilit bir rol oynamaktadır.
+                    </p>
+                    <div class="chart-container">
+                        <canvas id="leagueDistributionChart"></canvas>
+                    </div>
+                </div>
+            </section>
+            
+            <section id="risk-analysis">
+                <h2 class="text-xl sm:text-2xl md:text-3xl font-bold mb-6 text-center">"Banko" Maçlar ve Risk Analizi</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 sm:gap-8">
+                    <div class="card rounded-xl shadow-2xl p-4 sm:p-6 md:p-8 flex flex-col items-center justify-center text-center">
+                         <h3 class="text-lg sm:text-xl font-semibold mb-2">En Güvenilir Tahmin</h3>
+                         <p class="text-5xl sm:text-6xl md:text-7xl font-black text-[#DB1F48]">97.5%</p>
+                         <p class="text-base sm:text-lg mt-2">Bayern Münih Galibiyeti</p>
+                         <p class="text-xs sm:text-sm text-[#E5DDC8]/60">(vs. Auckland City)</p>
+                         <p class="mt-4 text-sm sm:text-base text-[#E5DDC8]/80">Avrupa devi ile amatör bir takım arasındaki ezici kalite farkı, bu maçı haftanın en net favorisi yapıyor.</p>
+                    </div>
+                    <div class="card rounded-xl shadow-2xl p-4 sm:p-6 md:p-8 flex flex-col items-center justify-center text-center">
+                         <h3 class="text-lg sm:text-xl font-semibold mb-2">Diğer Güçlü Aday</h3>
+                         <p class="text-5xl sm:text-6xl md:text-7xl font-black text-[#DB1F48]">89.9%</p>
+                         <p class="text-base sm:text-lg mt-2">Botafogo RJ Galibiyeti</p>
+                         <p class="text-xs sm:text-sm text-[#E5DDC8]/60">(vs. Seattle Sounders)</p>
+                          <p class="mt-4 text-sm sm:text-base text-[#E5DDC8]/80">Seattle'ın ciddi sakatlık ve hastalık sorunları, Botafogo'yu turnuvanın bir diğer banko adayı haline getiriyor.</p>
+                    </div>
+                </div>
+                 <div class="card rounded-xl shadow-2xl p-4 sm:p-6 md:p-8 mt-6 sm:mt-8">
+                    <h3 class="text-xl sm:text-2xl font-bold mb-4">Maçlara Göre Galibiyet Olasılıkları</h3>
+                    <p class="mb-4 sm:mb-6 text-sm sm:text-base text-[#E5DDC8]/80">
+                        Aşağıdaki grafik, piyasa oranlarına göre ev sahibi (1), beraberlik (X) ve deplasman (2) takımlarının galibiyet ihtimallerini karşılaştırmaktadır. Oranların birbirine yakın olduğu maçlar (örneğin Jeju - Daegu) en yüksek riski taşırken, bir adayın açıkça favori olduğu maçlar daha güvenli seçenekler sunar.
+                    </p>
+                    <div class="chart-container h-[400px] max-h-[600px]">
+                         <canvas id="confidenceChart"></canvas>
+                    </div>
+                </div>
+            </section>
+            
+            <section id="injuries">
+                <div class="card rounded-xl shadow-2xl p-4 sm:p-6 md:p-8">
+                    <h2 class="text-xl sm:text-2xl md:text-3xl font-bold mb-4">Kritik Faktör: Takımların Sakatlık Raporu</h2>
+                    <p class="mb-4 sm:mb-6 text-sm sm:text-base text-[#E5DDC8]/80">
+                        Sakatlıklar, maç sonuçlarını doğrudan etkileyen en önemli faktörlerden biridir. Özellikle Al Ahly ve Seattle Sounders gibi çok sayıda kilit oyuncusu eksik olan takımların performansı ciddi şekilde düşebilir. Bu grafik, analize dahil edilen takımlar arasındaki sakat oyuncu sayılarını göstermektedir.
+                    </p>
+                    <div class="chart-container">
+                        <canvas id="injuryChart"></canvas>
+                    </div>
+                </div>
+            </section>
+
+            <section id="methodology">
+                <div class="card rounded-xl shadow-2xl p-4 sm:p-6 md:p-8">
+                    <h2 class="text-xl sm:text-2xl md:text-3xl font-bold mb-4">Tahmin Metodolojisi</h2>
+                    <p class="mb-6 sm:mb-8 text-sm sm:text-base text-[#E5DDC8]/80">
+                        Tahminlerimiz, basit bir seçimin ötesinde, çok katmanlı bir veri analiz sürecine dayanmaktadır. Her maç için izlenen sistematik yaklaşım aşağıda özetlenmiştir.
+                    </p>
+                    <div class="flex flex-col md:flex-row items-center justify-center space-y-4 md:space-y-0 md:space-x-4">
+                        <div class="flow-step border-2 rounded-lg p-3 text-center w-full md:w-auto">
+                            <span class="text-2xl sm:text-3xl">📊</span>
+                            <p class="font-semibold mt-1 text-sm sm:text-base">Veri Toplama</p>
+                            <p class="text-xs text-[#E5DDC8]/70">Form, H2H, Sakatlık</p>
+                        </div>
+                        <div class="text-xl sm:text-2xl font-bold flow-arrow transform md:-rotate-0 rotate-90">&rarr;</div>
+                        <div class="flow-step border-2 rounded-lg p-3 text-center w-full md:w-auto">
+                            <span class="text-2xl sm:text-3xl">📈</span>
+                            <p class="font-semibold mt-1 text-sm sm:text-base">Piyasa Analizi</p>
+                            <p class="text-xs text-[#E5DDC8]/70">Bahis Oranları</p>
+                        </div>
+                        <div class="text-xl sm:text-2xl font-bold flow-arrow transform md:-rotate-0 rotate-90">&rarr;</div>
+                        <div class="flow-step border-2 rounded-lg p-3 text-center w-full md:w-auto">
+                            <span class="text-2xl sm:text-3xl">🧠</span>
+                            <p class="font-semibold mt-1 text-sm sm:text-base">Kapsamlı Değerlendirme</p>
+                            <p class="text-xs text-[#E5DDC8]/70">Faktörlerin Ağırlığı</p>
+                        </div>
+                        <div class="text-xl sm:text-2xl font-bold flow-arrow transform md:-rotate-0 rotate-90">&rarr;</div>
+                        <div class="flow-step border-2 rounded-lg p-3 text-center w-full md:w-auto bg-[#DB1F48] border-[#DB1F48]">
+                             <span class="text-2xl sm:text-3xl">🎯</span>
+                            <p class="font-bold mt-1 text-sm sm:text-base text-white">Sonuç Tahmini</p>
+                            <p class="text-xs text-white/80">1, X veya 2</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section id="summary">
+                 <div class="card rounded-xl shadow-2xl p-4 sm:p-6 md:p-8">
+                    <h2 class="text-xl sm:text-2xl md:text-3xl font-bold mb-4">Haftanın Tahmin Özeti</h2>
+                    <p class="mb-4 sm:mb-6 text-sm sm:text-base text-[#E5DDC8]/80">
+                       Tüm analizler sonucunda ortaya çıkan 15 maçlık tahmin listesi aşağıdadır. Detaylı yorumlar için bir maça tıklayın! Kesin sonuç görmediğimiz maçlar için çiftli ve üçlü seçimler yapılmıştır.
+                    </p>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse text-sm sm:text-base">
+                            <thead>
+                                <tr class="border-b border-[#01949A]">
+                                    <th class="p-3 sm:p-4">#</th>
+                                    <th class="p-3 sm:p-4">Ev Sahibi</th>
+                                    <th class="p-3 sm:p-4">Deplasman</th>
+                                    <th class="p-3 sm:p-4 text-center">Tahmin</th>
+                                </tr>
+                            </thead>
+                            <tbody id="prediction-table-body">
+                                <!-- Table rows will be generated by JavaScript below -->
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="mt-8 p-4 bg-[#002840] rounded-lg border border-[#01949A] text-sm text-[#E5DDC8]/80">
+                        <h3 class="text-lg sm:text-xl font-semibold text-[#E5DDC8] mb-2">Kupon Maliyeti ve Stratejisi</h3>
+                        <p class="mb-1">Bu hafta için 4 maça üçlü seçim (1-X-2) ve geri kalan 11 maça tekli/çiftli seçim yapılarak oluşturulan kuponun toplam maliyeti: <span class="font-bold text-[#DB1F48]">810 TL</span> (3^4).</p>
+                        <p class="mb-1">Bu strateji, bütçenizi (10 TL - 1250 TL arası) korurken, özellikle en belirsiz maçlarda kazanma ihtimalinizi garanti altına almayı hedefler.</p>
+                        <p>Üçlü ve çiftli seçimler, <span class="font-bold text-[#F4A261]">oyuncu hataları</span>, <span class="font-bold text-[#F4A261]">hakem kararları</span> veya beklenmedik form düşüşleri gibi sürpriz faktörlere karşı bir sigorta görevi görür ve kuponunuzun tutma şansını yükseltir.</p>
+                        <button id="analyzeCouponBtn" class="ai-button w-full mt-4">Kuponumu Analiz Et ✨</button>
+                    </div>
+                </div>
+            </section>
+
+            <section id="coupons">
+                <h2 class="text-xl sm:text-2xl md:text-3xl font-bold mb-6 text-center">Kupon Oluşturma ve Analizi</h2>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8 mb-8">
+                    <div class="card rounded-xl shadow-2xl p-4 sm:p-6 md:p-8">
+                        <h3 class="text-lg sm:text-xl font-semibold mb-3">Yapay Zeka Kuponu 1: Yüksek İhtimalli Tekli Sonuçlar</h3>
+                        <p class="mb-4 text-sm text-[#E5DDC8]/70">
+                            Bu kupon, yapay zekanın en yüksek güvene sahip olduğu tekli tahminlerden oluşur. Risk minimal tutulmuştur ancak kazanç potansiyeli çoklu kuponlara göre daha düşüktür.
+                        </p>
+                        <p id="ai-single-coupon-price" class="mt-4 text-base font-bold text-[#2A9D8F]">Maliyet: 10 TL</p>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse text-sm sm:text-base">
+                                <thead>
+                                    <tr class="border-b border-[#01949A]">
+                                        <th class="p-3 sm:p-4">#</th>
+                                        <th class="p-3 sm:p-4">Ev Sahibi</th>
+                                        <th class="p-3 sm:p-4">Deplasman</th>
+                                        <th class="p-3 sm:p-4 text-center">Tahmin</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="ai-single-coupon-body">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="card rounded-xl shadow-2xl p-4 sm:p-6 md:p-8">
+                        <h3 class="text-lg sm:text-xl font-semibold mb-3">Yapay Zeka Kuponu 2: İhtimalleri Arttıran Çoklu Seçimler (810 TL)</h3>
+                        <p class="mb-4 text-sm text-[#E5DDC8]/70">
+                            Bu kupon, bütçe dahilinde en çok üçlü seçimi kullanarak 15 maçın tamamını tutturma ihtimalini maksimize etmeyi hedefler.
+                        </p>
+                        <p id="ai-multi-coupon-price" class="mt-4 text-base font-bold text-[#2A9D8F]">Maliyet: 810 TL</p>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse text-sm sm:text-base">
+                                <thead>
+                                    <tr class="border-b border-[#01949A]">
+                                        <th class="p-3 sm:p-4">#</th>
+                                        <th class="p-3 sm:p-4">Ev Sahibi</th>
+                                        <th class="p-3 sm:p-4">Deplasman</th>
+                                        <th class="p-3 sm:p-4 text-center">Tahmin</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="ai-multi-coupon-body">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="card rounded-xl shadow-2xl p-4 sm:p-6 md:p-8">
+                        <h3 class="text-lg sm:text-xl font-semibold mb-3">Yapay Zeka Kuponu 3: Dengeli Çoklu Seçimler (1080 TL)</h3>
+                        <p class="mb-4 text-sm text-[#E5DDC8]/70">
+                            Bu kupon, tekli, ikili ve üçlü seçimleri daha dengeli kullanarak, yüksek kazanç potansiyelini korurken risk dağılımını optimize eder.
+                        </p>
+                        <p id="ai-combined-risk-coupon-price" class="mt-4 text-base font-bold text-[#2A9D8F]">Maliyet: 1080 TL</p>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse text-sm sm:text-base">
+                                <thead>
+                                    <tr class="border-b border-[#01949A]">
+                                        <th class="p-3 sm:p-4">#</th>
+                                        <th class="p-3 sm:p-4">Ev Sahibi</th>
+                                        <th class="p-3 sm:p-4">Deplasman</th>
+                                        <th class="p-3 sm:p-4 text-center">Tahmin</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="ai-combined-risk-coupon-body">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 sm:gap-8">
+                    <div class="card rounded-xl shadow-2xl p-4 sm:p-6 md:p-8">
+                        <h3 class="text-lg sm:text-xl font-semibold mb-3">Kullanıcı Kuponu 1: Kendi Seçimlerinizi Yapın</h3>
+                        <p class="mb-4 text-sm text-[#E5DDC8]/70">
+                            Burada kendi Spor Toto tahminlerinizi işaretleyebilirsiniz. Hücreye tıklayarak 1, X veya 2 seçimi yapabilirsiniz. Çiftli ve üçlü seçimler için aynı hücreye art arda tıklayın.
+                        </p>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse text-sm sm:text-base">
+                                <thead>
+                                    <tr class="border-b border-[#01949A]">
+                                        <th class="p-3 sm:p-4">#</th>
+                                        <th class="p-3 sm:p-4">Ev Sahibi</th>
+                                        <th class="p-3 sm:p-4">Deplasman</th>
+                                        <th class="p-3 sm:p-4 text-center">Seçim</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="user-coupon-1-body">
+                                </tbody>
+                            </table>
+                        </div>
+                        <p id="user-coupon-1-price" class="mt-4 text-base font-bold text-[#2A9D8F]">Maliyet: 10 TL</p>
+                        <div class="flex space-x-2 mt-4">
+                            <button id="saveUserCoupon1Btn" class="ai-button flex-1">Kaydet</button>
+                            <button id="loadUserCoupon1Btn" class="ai-button flex-1">Yükle</button>
+                        </div>
+                    </div>
+
+                    <div class="card rounded-xl shadow-2xl p-4 sm:p-6 md:p-8">
+                        <h3 class="text-lg sm:text-xl font-semibold mb-3">Kullanıcı Kuponu 2: Kendi Seçimlerinizi Yapın</h3>
+                        <p class="mb-4 text-sm text-[#E5DDC8]/70">
+                            Burada ikinci Spor Toto tahminlerinizi işaretleyebilirsiniz. Hücreye tıklayarak 1, X veya 2 seçimi yapabilirsiniz. Çiftli ve üçlü seçimler için aynı hücreye art arda tıklayın.
+                        </p>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse text-sm sm:text-base">
+                                <thead>
+                                    <tr class="border-b border-[#01949A]">
+                                        <th class="p-3 sm:p-4">#</th>
+                                        <th class="p-3 sm:p-4">Ev Sahibi</th>
+                                        <th class="p-3 sm:p-4">Deplasman</th>
+                                        <th class="p-3 sm:p-4 text-center">Seçim</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="user-coupon-2-body">
+                                </tbody>
+                            </table>
+                        </div>
+                        <p id="user-coupon-2-price" class="mt-4 text-base font-bold text-[#2A9D8F]">Maliyet: 10 TL</p>
+                        <div class="flex space-x-2 mt-4">
+                            <button id="saveUserCoupon2Btn" class="ai-button flex-1">Kaydet</button>
+                            <button id="loadUserCoupon2Btn" class="ai-button flex-1">Yükle</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+        
+        <footer class="text-center mt-8 sm:mt-10 pt-4 sm:pt-6 border-t border-white/10">
+            <p class="text-xs sm:text-sm text-[#E5DDC8]/60">Bu infografik, kamuya açık veriler ve uzman analizleri kullanılarak oluşturulmuştur. Tahminler garanti edilmez.</p>
+            <p class="text-xs text-[#E5DDC8]/40 mt-1">© 2025 Veri Görselleştirme Raporu</p>
+            <p class="text-xs text-[#E5DDC8]/40 mt-1">Hakem performansları gibi harici ve dinamik veri kaynakları, basit bir HTML dosyasında doğrudan işlenememektedir.</p>
+        </footer>
+
+    </div>
+
+    <div id="commentaryModal" class="modal">
+        <div class="modal-content">
+            <span class="close-button" id="closeModalBtn">&times;</span>
+            <h2 id="modalTitle" class="text-xl sm:text-2xl font-bold mb-3 sm:mb-4">Maç Yorumu</h2>
+            <div id="modalLoader" class="loader"></div>
+            <div id="match-info-section" class="mt-4 pt-4 border-t border-[#01949A]/30">
+                <p id="matchDateInfo" class="modal-info-item"><strong>Tarih:</strong> </p>
+                <p id="matchTimeInfo" class="modal-info-item"><strong>Saat:</strong> </p>
+                <p id="refereeInfo" class="modal-info-item"><strong>Hakem:</strong> </p>
+                <p id="weatherInfo" class="modal-info-item"><strong>Hava Durumu:</strong> </p>
+            </div>
+            <p id="modalContent" class="text-sm sm:text-base mt-4"></p>
+            
+            <div id="recent-matches-section" class="recent-matches-section mt-4 pt-4 border-t border-[#01949A]/30">
+                <h3 class="text-lg font-semibold mb-3">Son 5 Maç Form Durumları</h3>
+                <div class="flex flex-col sm:flex-row justify-between space-y-4 sm:space-y-0 sm:space-x-4 text-sm">
+                    <div class="w-full sm:w-1/2">
+                        <h4 id="homeTeamFormTitle" class="font-semibold text-[#01949A] mb-2">Ev Sahibi Formu:</h4>
+                        <ul id="homeTeamFormList" class="form-list">
+                        </ul>
+                    </div>
+                    <div class="w-full sm:w-1/2">
+                        <h4 id="awayTeamFormTitle" class="font-semibold text-[#F4A261] mb-2">Deplasman Formu:</h4>
+                        <ul id="awayTeamFormList" class="form-list">
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div id="missing-players-section" class="mt-4 pt-4 border-t border-[#01949A]/30 hidden">
+                <h3 class="text-lg font-semibold mb-3 missing-players-heading">Eksik ve Cezalı Oyuncular</h3>
+                <div class="flex flex-col sm:flex-row justify-between space-y-4 sm:space-y-0 sm:space-x-4 text-sm">
+                    <div class="w-full sm:w-1/2">
+                        <h4 id="homeTeamMissingTitle" class="font-semibold text-[#01949A] mb-2">Ev Sahibi Eksikler:</h4>
+                        <ul id="homeTeamMissingList" class="form-list">
+                        </ul>
+                    </div>
+                    <div class="w-full sm:w-1/2">
+                        <h4 id="awayTeamMissingTitle" class="font-semibold text-[#F4A261] mb-2">Deplasman Eksikler:</h4>
+                        <ul id="awayTeamMissingList" class="form-list">
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div id="player-analysis-section" class="player-analysis-section hidden">
+                <h3 class="text-lg font-semibold mb-2">Oyuncu Önem Analizi ✨</h3>
+                <div id="player-importance-loader" class="loader hidden"></div>
+                <p id="player-importance-text" class="text-sm"></p>
+            </div>
+            <button id="analyzeAlternativeScenarioBtn" class="ai-button w-full mt-4">Sürpriz Senaryo Analizi ✨</button>
+        </div>
+    </div>
+
+    <div id="couponAnalysisModal" class="modal">
+        <div class="modal-content">
+            <span class="close-button" id="closeCouponModalBtn">&times;</span>
+            <h2 class="text-xl sm:text-2xl font-bold mb-3 sm:mb-4">Kupon Analizi ✨</h2>
+            <div id="couponModalLoader" class="loader"></div>
+            <p id="couponModalContent" class="text-sm sm:text-base"></p>
+        </div>
+    </div>
+
+    <div id="messageModal" class="modal">
+        <div class="modal-content max-w-sm">
+            <span class="close-button" id="closeMessageModalBtn">&times;</span>
+            <h3 id="messageModalTitle" class="text-xl font-bold mb-4 text-[#01949A]">Mesaj</h3>
+            <p id="messageModalContent" class="text-base text-[#E5DDC8]"></p>
+        </div>
+    </div>
+
+    <nav class="fixed bottom-0 left-0 right-0 bg-[#004369] border-t border-[#01949A] shadow-lg z-50 md:hidden">
+        <div class="flex justify-around items-center h-16">
+            <button class="flex flex-col items-center justify-center text-sm font-semibold text-[#E5DDC8] w-1/4 h-full transform transition-transform duration-200 ease-in-out active:scale-95 hover:scale-[1.03]" onclick="scrollToSection('body')">
+                <span class="text-xl">🏠</span>
+                <span>Genel Bakış</span>
+            </button>
+            <button class="flex flex-col items-center justify-center text-sm font-semibold text-[#E5DDC8] w-1/4 h-full transform transition-transform duration-200 ease-in-out active:scale-95 hover:scale-[1.03]" onclick="scrollToSection('risk-analysis')">
+                <span class="text-xl">⚠️</span>
+                <span>Risk Analizi</span>
+            </button>
+            <button class="flex flex-col items-center justify-center text-sm font-semibold text-[#E5DDC8] w-1/4 h-full transform transition-transform duration-200 ease-in-out active:scale-95 hover:scale-[1.03]" onclick="scrollToSection('injuries')">
+                <span class="text-xl">🤕</span>
+                <span>Sakatlıklar</span>
+            </button>
+            <button class="flex flex-col items-center justify-center text-sm font-semibold text-[#E5DDC8] w-1/4 h-full transform transition-transform duration-200 ease-in-out active:scale-95 hover:scale-[1.03]" onclick="scrollToSection('coupons')">
+                <span class="text-xl">⚽</span>
+                <span>Kuponlar</span>
+            </button>
+        </div>
+    </nav>
+
+    <script type="text/javascript">
+        // Firebase global variables (will be set by module script)
+        let db;
+        let auth;
+        let userId;
+        let appId;
+        let isAuthReady; // Auth state flag
+
+        // Message Modal elements
+        const messageModal = document.getElementById('messageModal');
+        const messageModalTitle = document.getElementById('messageModalTitle');
+        const messageModalContent = document.getElementById('messageModalContent');
+        const closeMessageModalBtn = document.getElementById('closeMessageModalBtn');
+
+        function showMessage(title, content) {
+            messageModalTitle.textContent = title;
+            messageModalContent.textContent = content;
+            messageModal.style.display = 'flex';
+        }
+
+        closeMessageModalBtn.addEventListener('click', () => {
+            messageModal.style.display = 'none';
+        });
+
+        // UI elements for authentication
+        const emailInput = document.getElementById('emailInput');
+        const passwordInput = document.getElementById('passwordInput');
+        const loginBtn = document.getElementById('loginBtn');
+        const signupBtn = document.getElementById('signupBtn');
+        const logoutBtn = document.getElementById('logoutBtn');
+        const authFormSection = document.getElementById('auth-form-section');
+        const authStatusSection = document.getElementById('auth-status-section');
+        const currentUserIdDisplay = document.getElementById('currentUserId');
+
+
+        // Function to update authentication UI
+        function updateAuthUI(user) {
+            if (user && user.isAnonymous === false) { // Logged in with email/password
+                authFormSection.classList.add('hidden');
+                authStatusSection.classList.remove('hidden');
+                currentUserIdDisplay.textContent = user.email || user.uid; // Show email if available, else uid
+            } else { // Not logged in or anonymous
+                authFormSection.classList.remove('hidden');
+                authStatusSection.classList.add('hidden');
+                currentUserIdDisplay.textContent = '';
+            }
+            userId = window.userId; // Ensure global userId is updated
+            console.log("Current User ID:", userId);
+        }
+
+        // Authentication Handlers
+        loginBtn.addEventListener('click', async () => {
+            const email = emailInput.value;
+            const password = passwordInput.value;
+            if (!email || !password) {
+                showMessage("Hata", "Lütfen e-posta ve şifrenizi girin.");
+                return;
+            }
+            if (!window.auth) {
+                 showMessage("Hata", "Firebase kimlik doğrulama başlatılmadı.");
+                 return;
+            }
+            try {
+                await window.signInWithEmailAndPassword(window.auth, email, password);
+                showMessage("Başarılı", "Başarıyla giriş yaptınız!");
+            } catch (error) {
+                console.error("Giriş hatası:", error);
+                showMessage("Giriş Hatası", `Giriş yapılamadı: ${error.message}`);
+            }
+        });
+
+        signupBtn.addEventListener('click', async () => {
+            const email = emailInput.value;
+            const password = passwordInput.value;
+            if (!email || !password) {
+                showMessage("Hata", "Lütfen geçerli bir e-posta ve şifre girin.");
+                return;
+            }
+            if (password.length < 6) {
+                showMessage("Hata", "Şifre en az 6 karakter olmalıdır.");
+                return;
+            }
+            if (!window.auth) {
+                 showMessage("Hata", "Firebase kimlik doğrulama başlatılmadı.");
+                 return;
+            }
+            try {
+                await window.createUserWithEmailAndPassword(window.auth, email, password);
+                showMessage("Başarılı", "Hesabınız başarıyla oluşturuldu ve giriş yapıldı!");
+            } catch (error) {
+                console.error("Kayıt hatası:", error);
+                showMessage("Kayıt Hatası", `Kayıt yapılamadı: ${error.message}`);
+            }
+        });
+
+        logoutBtn.addEventListener('click', async () => {
+            if (!window.auth) {
+                 showMessage("Hata", "Firebase kimlik doğrulama başlatılmadı.");
+                 return;
+            }
+            try {
+                await window.signOutFirebase(window.auth);
+                // After signOut, onAuthStateChanged will be triggered, updating UI
+                showMessage("Başarılı", "Başarıyla çıkış yaptınız.");
+            } catch (error) {
+                console.error("Çıkış hatası:", error);
+                showMessage("Çıkış Hatası", `Çıkış yapılamadı: ${error.message}`);
+            }
+        });
+
+        const chartTextColor = '#E5DDC8';
+        const gridColor = 'rgba(229, 221, 200, 0.1)';
+        const primaryColor = '#DB1F48';
+        const secondaryColor = '#01949A';
+        const tertiaryColor = '#E5DDC8';
+        const accentColor1 = '#F4A261';
+        const accentColor2 = '#2A9D8F';
+
+        function formatDate(dateString) {
+            if (!dateString) return 'N/A';
+            const parts = dateString.split('.');
+            if (parts.length === 3) {
+                const day = parseInt(parts[0], 10);
+                const month = parseInt(parts[1], 10);
+                const year = parts[2].substring(2);
+                return `${day}.${month}.${year}`;
+            }
+            return dateString;
+        }
+
+        const matchesData = [
+            { id: 1, home: 'Al Ahly', away: 'Inter Miami CF', league: 'FIFA Kulüpler Dünya Kupası', prediction: '2', aiSingle: '2', aiMulti: '1X2', aiCombinedRisk: '1X2', userPrediction1: '', userPrediction2: '',
+              matchDate: '15.06.2025', matchTime: '18:00', referee: { name: 'Antonio Mateu Lahoz', rating: 'Yüksek', tendencies: 'Kartlara yatkın, oyunu durdurur' }, weather: { condition: 'Güneşli', temperature: '28°C', wind: 'Hafif' },
+              homeTeamRecentMatches: [
+                  { date: formatDate('20.05.2025'), opponent: 'El Dakhleya', score: '2-0', result: 'G', firstHalfCorners: 3, secondHalfCorners: 4, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('15.05.2025'), opponent: 'Ceramica Cleopatra', score: '1-1', result: 'B', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 2, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('11.05.2025'), opponent: 'Pharco', score: '1-0', result: 'G', firstHalfCorners: 3, secondHalfCorners: 3, yellowCards: 0, redCards: 0, location: 'Evde' },
+                  { date: formatDate('07.05.2025'), opponent: 'Al Ittihad Alexandria', score: '0-1', result: 'G', firstHalfCorners: 4, secondHalfCorners: 4, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('03.05.2025'), opponent: 'Future FC', score: '2-1', result: 'G', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+              ],
+              awayTeamRecentMatches: [
+                  { date: formatDate('20.05.2025'), opponent: 'Orlando City', score: '0-0', result: 'B', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('15.05.2025'), opponent: 'Atlanta United', score: '1-2', result: 'M', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 2, redCards: 0, location: 'Evde' },
+                  { date: formatDate('11.05.2025'), opponent: 'Montreal Impact', score: '2-3', result: 'G', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 0, redCards: 1, location: 'Deplasman' },
+                  { date: formatDate('07.05.2025'), opponent: 'Nashville SC', score: '3-3', result: 'B', firstHalfCorners: 3, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('03.05.2025'), opponent: 'Charlotte FC', score: '0-1', result: 'G', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+              ],
+              homeTeamMissingPlayers: [
+                { name: 'Karim Fouad', status: 'Sakat (Çapraz Bağ)', matchesPlayed: 15, startsInXI: 10 },
+                { name: 'Reda Slim', status: 'Sakat (Kıkırdak Hasarı)', matchesPlayed: 10, startsInXI: 5 },
+                { name: 'Yahia Attiyat Allah', status: 'Sakat (Yüz Kırığı)', matchesPlayed: 18, startsInXI: 17 },
+                { name: 'Yasser Ibrahim', status: 'Sakat (Hamstring)', matchesPlayed: 12, startsInXI: 8 },
+                { name: 'Samir Mohamed', status: 'Sakat (Hamstring)', matchesPlayed: 7, startsInXI: 3 },
+                { name: 'Emam Ashour', status: 'Sakat (Adduktör Kası - Şüpheli)', matchesPlayed: 20, startsInXI: 19 }
+              ],
+              awayTeamMissingPlayers: [
+                { name: 'David Ruíz', status: 'Sakat (Gerilme)', matchesPlayed: 10, startsInXI: 6 },
+                { name: 'Drake Callender', status: 'Sakat (Kasık)', matchesPlayed: 25, startsInXI: 25 },
+                { name: 'Baltasar Rodríguez', status: 'Sakat (Bilinmeyen)', matchesPlayed: 5, startsInXI: 1 },
+                { name: 'Yannick Bright', status: 'Sakat (Kas)', matchesPlayed: 8, startsInXI: 4 },
+                { name: 'Gonzalo Luján', status: 'Sakat (Bilinmeyen)', matchesPlayed: 3, startsInXI: 0 },
+                { name: 'Jordi Alba', status: 'Sakat (Kas)', matchesPlayed: 22, startsInXI: 20 },
+                { name: 'Luis Suárez', status: 'Cezalı (Sarı Kart Sınırı)', matchesPlayed: 24, startsInXI: 23 },
+                { name: 'Jordi Alba', status: 'Cezalı (Sarı Kart Sınırı)', matchesPlayed: 22, startsInXI: 20 },
+                { name: 'Yannick Bright', status: 'Cezalı (Sarı Kart Sınırı)', matchesPlayed: 8, startsInXI: 4 },
+                { name: 'Benja Cremaschi', status: 'Cezalı (Sarı Kart Sınırı)', matchesPlayed: 18, startsInXI: 15 }
+              ]
+            },
+            { id: 2, home: 'Bayern Münih', away: 'Auckland City', league: 'FIFA Kulüpler Dünya Kupası', prediction: '1', aiSingle: '1', aiMulti: '1', aiCombinedRisk: '1', userPrediction1: '', userPrediction2: '',
+              matchDate: '15.06.2025', matchTime: '21:00', referee: { name: 'Danny Makkelie', rating: 'Çok Yüksek', tendencies: 'Disiplinli, oyunu akıcı tutar' }, weather: { condition: 'Parçalı Bulutlu', temperature: '22°C', wind: 'Orta' },
+              homeTeamRecentMatches: [
+                  { date: formatDate('18.05.2025'), opponent: 'Hoffenheim', score: '4-2', result: 'M', firstHalfCorners: 4, secondHalfCorners: 5, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('12.05.2025'), opponent: 'Wolfsburg', score: '2-0', result: 'G', firstHalfCorners: 3, secondHalfCorners: 4, yellowCards: 0, redCards: 0, location: 'Evde' },
+                  { date: formatDate('08.05.2025'), opponent: 'Real Madrid', score: '2-1', result: 'M', firstHalfCorners: 4, secondHalfCorners: 4, yellowCards: 2, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('04.05.2025'), opponent: 'Stuttgart', score: '3-1', result: 'M', firstHalfCorners: 3, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('30.04.2025'), opponent: 'Real Madrid', score: '2-2', result: 'B', firstHalfCorners: 5, secondHalfCorners: 5, yellowCards: 1, redCards: 0, location: 'Evde' },
+              ],
+              awayTeamRecentMatches: [
+                  { date: formatDate('18.05.2025'), opponent: 'Wellington Olympic', score: '3-0', result: 'G', firstHalfCorners: 1, secondHalfCorners: 1, yellowCards: 0, redCards: 0, location: 'Evde' },
+                  { date: formatDate('11.05.2025'), opponent: 'Eastern Suburbs AFC', score: '1-1', result: 'B', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('04.05.2025'), opponent: 'Christchurch United', score: '2-0', result: 'G', firstHalfCorners: 0, secondHalfCorners: 1, yellowCards: 0, redCards: 0, location: 'Evde' },
+                  { date: formatDate('27.04.2025'), opponent: 'Manurewa AFC', score: '0-4', result: 'G', firstHalfCorners: 1, secondHalfCorners: 1, yellowCards: 0, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('20.04.2025'), opponent: 'Napier City Rovers', score: '5-0', result: 'G', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 0, redCards: 0, location: 'Evde' },
+              ],
+              homeTeamMissingPlayers: [
+                { name: 'Jamal Musiala', status: 'Sakat (Hamstring)', matchesPlayed: 25, startsInXI: 22 },
+                { name: 'Alphonso Davies', status: 'Sakat (Çapraz Bağ - Uzun Süreli)', matchesPlayed: 18, startsInXI: 17 },
+                { name: 'Hiroki Ito', status: 'Sakat (Metatarsal Kırığı)', matchesPlayed: 10, startsInXI: 7 },
+                { name: 'Manuel Neuer', status: 'Sakat (Baldır Gerilmesi - Belirsiz)', matchesPlayed: 28, startsInXI: 28 },
+                { name: 'Kingsley Coman', status: 'Sakat', matchesPlayed: 20, startsInXI: 16 },
+                { name: 'Aleksandar Pavlović', status: 'Sakat', matchesPlayed: 14, startsInXI: 9 },
+                { name: 'Dayotchanculle Upamecano', status: 'Sakat', matchesPlayed: 23, startsInXI: 20 },
+                { name: 'Tarek Buchmann', status: 'Sakat', matchesPlayed: 2, startsInXI: 0 }
+              ],
+              awayTeamMissingPlayers: [
+                { name: 'Ek bilgi yok', status: 'Oyuncuların amatör statüsü', matchesPlayed: 0, startsInXI: 0 }
+              ]
+            },
+            { id: 3, home: 'Paris St PSG', away: 'Atletico Madrid', league: 'FIFA Kulüpler Dünya Kupası', prediction: '1', aiSingle: '1', aiMulti: '1', aiCombinedRisk: '1', userPrediction1: '', userPrediction2: '',
+              matchDate: '16.06.2025', matchTime: '17:00', referee: { name: 'Daniele Orsato', rating: 'Çok Yüksek', tendencies: 'Kararlılık, az kart' }, weather: { condition: 'Bulutlu', temperature: '19°C', wind: 'Orta' },
+              homeTeamRecentMatches: [
+                  { date: formatDate('18.05.2025'), opponent: 'Metz', score: '0-2', result: 'G', firstHalfCorners: 4, secondHalfCorners: 4, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('15.05.2025'), opponent: 'Nice', score: '1-2', result: 'G', firstHalfCorners: 3, secondHalfCorners: 4, yellowCards: 0, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('12.05.2025'), opponent: 'Toulouse', score: '1-3', result: 'M', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 2, redCards: 0, location: 'Evde' },
+                  { date: formatDate('07.05.2025'), opponent: 'Borussia Dortmund', score: '0-1', result: 'M', firstHalfCorners: 4, secondHalfCorners: 5, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('01.05.2025'), opponent: 'Borussia Dortmund', score: '1-0', result: 'M', firstHalfCorners: 3, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Evde' },
+              ],
+              awayTeamRecentMatches: [
+                  { date: formatDate('19.05.2025'), opponent: 'Getafe', score: '0-3', result: 'G', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('15.05.2025'), opponent: 'Celta Vigo', score: '1-0', result: 'G', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('12.05.2025'), opponent: 'Celta Vigo', score: '1-0', result: 'G', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 0, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('04.05.2025'), opponent: 'Mallorca', score: '0-1', result: 'G', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('01.05.2025'), opponent: 'Athletic Bilbao', score: '3-1', result: 'G', firstHalfCorners: 3, secondHalfCorners: 3, yellowCards: 2, redCards: 0, location: 'Evde' },
+              ],
+              homeTeamMissingPlayers: [
+                { name: 'Presnel Kimpembe', status: 'Sakat (Bacak Sakatlığı - Gelecek Sezona Kadar)', matchesPlayed: 8, startsInXI: 5 }
+              ],
+              awayTeamMissingPlayers: [
+                { name: 'Thomas Lemar', status: 'Sakat (Aşil)', matchesPlayed: 15, startsInXI: 12 },
+                { name: 'Reinildo Mandava', status: 'Milli Görevde', matchesPlayed: 20, startsInXI: 18 },
+                { name: 'Pablo Barrios', status: 'Sakat (Diz - Şüpheli)', matchesPlayed: 10, startsInXI: 7 }
+              ]
+            },
+            { id: 4, home: 'Palmeiras', away: 'Porto', league: 'FIFA Kulüpler Dünya Kupası', prediction: '2', aiSingle: '2', aiMulti: '1X2', aiCombinedRisk: '1X2', userPrediction1: '', userPrediction2: '',
+              matchDate: '16.06.2025', matchTime: '20:00', referee: { name: 'Wilton Sampaio', rating: 'Orta', tendencies: 'Sert futbola izin verir' }, weather: { condition: 'Yağmurlu', temperature: '15°C', wind: 'Kuvvetli' },
+              homeTeamRecentMatches: [
+                  { date: formatDate('02.06.2025'), opponent: 'Vasco da Gama', score: '2-1', result: 'G', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('29.05.2025'), opponent: 'Botafogo', score: '0-1', result: 'M', firstHalfCorners: 3, secondHalfCorners: 3, yellowCards: 2, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('25.05.2025'), opponent: 'Criciúma', score: '1-2', result: 'G', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('20.05.2025'), opponent: 'Independiente del Valle', score: '2-0', result: 'G', firstHalfCorners: 3, secondHalfCorners: 4, yellowCards: 0, redCards: 0, location: 'Evde' },
+                  { date: formatDate('16.05.2025'), opponent: 'Athletico-PR', score: '0-1', result: 'M', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+              ],
+              awayTeamRecentMatches: [
+                  { date: formatDate('26.05.2025'), opponent: 'Sporting CP', score: '2-1', result: 'G', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('18.05.2025'), opponent: 'Braga', score: '1-0', result: 'G', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 0, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('12.05.2025'), opponent: 'Boavista', score: '2-1', result: 'M', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('07.05.2025'), opponent: 'Famalicão', score: '0-2', result: 'M', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 2, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('03.05.2025'), opponent: 'Casa Pia', score: '1-2', result: 'M', firstHalfCorners: 3, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Evde' },
+              ],
+              homeTeamMissingPlayers: [
+                { name: 'Belirtilmeyen 3 önemli oyuncu', status: 'Sakat', matchesPlayed: 0, startsInXI: 0 }
+              ],
+              awayTeamMissingPlayers: [
+                { name: 'Ivan Marcano', status: 'Sakat (ACL)', matchesPlayed: 5, startsInXI: 3 },
+                { name: 'Zaidu Sanusi', status: 'Sakat (ACL)', matchesPlayed: 12, startsInXI: 9 },
+                { name: 'Gabriel Veron', status: 'Sakat (Aşil)', matchesPlayed: 18, startsInXI: 15 },
+                { name: 'Mehdi Taremi', status: 'Sakat (Uyluk - Şüpheli)', matchesPlayed: 20, startsInXI: 18 }
+              ]
+            },
+            { id: 5, home: 'Botafogo RJ', away: 'Seattle Sounders', league: 'FIFA Kulüpler Dünya Kupası', prediction: '1', aiSingle: '1', aiMulti: '1', aiCombinedRisk: '1', userPrediction1: '', userPrediction2: '',
+              matchDate: '17.06.2025', matchTime: '01:00', referee: { name: 'Ismail Elfath', rating: 'Ortalama', tendencies: 'Fazla düdük çalar' }, weather: { condition: 'Açık', temperature: '25°C', wind: 'Yok' },
+              homeTeamRecentMatches: [
+                  { date: formatDate('02.06.2025'), opponent: 'Corinthians', score: '0-1', result: 'G', firstHalfCorners: 3, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('29.05.2022'), opponent: 'Junior Barranquilla', score: '0-0', result: 'B', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 0, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('26.05.2025'), opponent: 'Fortaleza', score: '1-0', result: 'G', firstHalfCorners: 3, secondHalfCorners: 4, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('22.05.2025'), opponent: 'Universitario', score: '0-1', result: 'G', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('18.05.2025'), opponent: 'Cruzeiro', score: '1-2', result: 'M', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 2, redCards: 0, location: 'Evde' },
+              ],
+              awayTeamRecentMatches: [
+                  { date: formatDate('02.06.2025'), opponent: 'St. Louis City', score: '2-0', result: 'G', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('29.05.2025'), opponent: 'Real Salt Lake', score: '1-1', result: 'B', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('26.05.2025'), opponent: 'Charlotte FC', score: '2-1', result: 'M', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 2, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('19.05.2025'), opponent: 'Vancouver Whitecaps', score: '2-0', result: 'G', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 0, redCards: 0, location: 'Evde' },
+                  { date: formatDate('16.05.2025'), opponent: 'LA Galaxy', score: '2-0', result: 'M', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+              ],
+              homeTeamMissingPlayers: [
+                { name: '37 yaşındaki forvet', status: 'Sakatlıktan dönüyor', matchesPlayed: 8, startsInXI: 2 }
+              ],
+              awayTeamMissingPlayers: [
+                { name: 'Jackson Ragen', status: 'Sakat (Hamstring)', matchesPlayed: 15, startsInXI: 14 },
+                { name: 'Yeimar', status: 'Sakat (Hamstring)', matchesPlayed: 18, startsInXI: 17 },
+                { name: 'Kim Kee-hee', status: 'Sakat (Baldır)', matchesPlayed: 10, startsInXI: 7 },
+                { name: 'Nouhou', status: 'Cezalı (Durumu Belirsiz)', matchesPlayed: 20, startsInXI: 19 },
+                { name: 'Bell', status: 'Cezalı (Durumu Belirsiz)', matchesPlayed: 12, startsInXI: 10 },
+                { name: 'Takımın yarısı', status: 'Hastalık (Gastrointestinal Semptomlar)', matchesPlayed: 0, startsInXI: 0 },
+                { name: '7 ilk 11 oyuncusu', status: 'Milli Takım Arasında', matchesPlayed: 0, startsInXI: 0 }
+              ]
+            },
+            { id: 6, home: 'Inter Turku', away: 'Haka', league: 'Finlandiya Veikkausliiga', prediction: '1', aiSingle: '1', aiMulti: '1', aiCombinedRisk: '1', userPrediction1: '', userPrediction2: '',
+              matchDate: '17.06.2025', matchTime: '18:30', referee: { name: 'Ville Nevalainen', rating: 'İyi', tendencies: 'Dengeli kararlar verir' }, weather: { condition: 'Kapalı', temperature: '12°C', wind: 'Sert' },
+              homeTeamRecentMatches: [
+                  { date: formatDate('08.06.2025'), opponent: 'Gnistan', score: '0-0', result: 'B', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('04.06.2025'), opponent: 'Ekenäs IF', score: '1-2', result: 'G', firstHalfCorners: 3, secondHalfCorners: 4, yellowCards: 0, redCards: 0, location: 'Evde' },
+                  { date: formatDate('31.05.2025'), opponent: 'Lahti', score: '3-1', result: 'G', firstHalfCorners: 3, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('25.05.2025'), opponent: 'VPS', score: '0-0', result: 'B', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('18.05.2025'), opponent: 'KuPS', score: '2-1', result: 'G', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 0, redCards: 0, location: 'Evde' },
+              ],
+              awayTeamRecentMatches: [
+                  { date: formatDate('07.06.2025'), opponent: 'Ilves', score: '2-0', result: 'G', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('03.06.2025'), opponent: 'Mariehamn', score: '1-1', result: 'B', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 0, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('30.05.2025'), opponent: 'SJK', score: '1-2', result: 'M', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 2, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('24.05.2025'), opponent: 'KuPS', score: '3-1', result: 'M', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('17.05.2025'), opponent: 'VPS', score: '3-0', result: 'G', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 0, redCards: 0, location: 'Evde' },
+              ],
+              homeTeamMissingPlayers: [
+                { name: 'Yann Sommer', status: 'Sakat (Kaleci)', matchesPlayed: 28, startsInXI: 28 },
+                { name: 'Raffaele Di Gennaro', status: 'Sakat (Kaleci)', matchesPlayed: 2, startsInXI: 0 },
+                { name: 'Carlos Augusto', status: 'Sakat (Kanat Bek)', matchesPlayed: 22, startsInXI: 20 },
+                { name: 'Nicola Zalewski', status: 'Sakat (Kanat Bek)', matchesPlayed: 18, startsInXI: 14 },
+                { name: 'Matteo Darmian', status: 'Sakat (Kanat Bek)', matchesPlayed: 25, startsInXI: 23 }
+              ],
+              awayTeamMissingPlayers: [
+                { name: 'Eksik oyuncu bilgisi bulunmamaktadır.', status: 'Yok', matchesPlayed: 0, startsInXI: 0 }
+              ]
+            },
+            { id: 7, home: 'Oulu', away: 'HJK Helsinki', league: 'Finlandiya Veikkausliiga', prediction: '2', aiSingle: '2', aiMulti: '2', aiCombinedRisk: '2', userPrediction1: '', userPrediction2: '',
+              matchDate: '17.06.2025', matchTime: '20:00', referee: { name: 'Mohamed Al-Hakim', rating: 'Orta', tendencies: 'Sarı karta yatkın' }, weather: { condition: 'Bulutlu', temperature: '10°C', wind: 'Hafif' },
+              homeTeamRecentMatches: [
+                  { date: formatDate('08.06.2025'), opponent: 'VPS', score: '1-1', result: 'B', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('04.06.2025'), opponent: 'Ilves', score: '2-0', result: 'M', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 2, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('31.05.2025'), opponent: 'HJK Helsinki', score: '0-0', result: 'B', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('25.05.2025'), opponent: 'SJK', score: '1-2', result: 'G', firstHalfCorners: 3, secondHalfCorners: 3, yellowCards: 0, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('18.05.2025'), opponent: 'Inter Turku', score: '0-1', result: 'M', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+              ],
+              awayTeamRecentMatches: [
+                  { date: formatDate('08.06.2025'), opponent: 'Lahti', score: '2-0', result: 'G', firstHalfCorners: 3, secondHalfCorners: 4, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('04.06.2025'), opponent: 'Gnistan', score: '0-3', result: 'G', firstHalfCorners: 3, secondHalfCorners: 3, yellowCards: 0, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('31.05.2025'), opponent: 'AC Oulu', score: '0-0', result: 'B', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('25.05.2025'), opponent: 'Ekenäs IF', score: '1-0', result: 'G', firstHalfCorners: 4, secondHalfCorners: 4, yellowCards: 0, redCards: 0, location: 'Evde' },
+                  { date: formatDate('18.05.2025'), opponent: 'KuPS', score: '1-2', result: 'G', firstHalfCorners: 3, secondHalfCorners: 4, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+              ],
+              homeTeamMissingPlayers: [
+                { name: 'Miika Koskela', status: 'Sakat (Sırt Sakatlığı)', matchesPlayed: 8, startsInXI: 6 },
+                { name: 'Marokhy Ndione', status: 'Sakat (Bilinmeyen)', matchesPlayed: 12, startsInXI: 7 },
+                { name: 'Leon Bergsma', status: 'Sakat (Bilinmeyen)', matchesPlayed: 10, startsInXI: 8 }
+              ],
+              awayTeamMissingPlayers: [
+                { name: 'Eksik oyuncu bilgisi bulunmamaktadır.', status: 'Yok', matchesPlayed: 0, startsInXI: 0 }
+              ]
+            },
+            { id: 8, home: 'KuPS', away: 'Ilves', league: 'Finlandiya Veikkausliiga', prediction: '1', aiSingle: '1', aiMulti: '1', aiCombinedRisk: '1', userPrediction1: '', userPrediction2: '',
+              matchDate: '18.06.2025', matchTime: '19:00', referee: { name: 'Antti Munukka', rating: 'Ortalama', tendencies: 'Fazla avantaj bırakır' }, weather: { condition: 'Açık', temperature: '18°C', wind: 'Hafif' },
+              homeTeamRecentMatches: [
+                  { date: formatDate('08.06.2025'), opponent: 'Lahti', score: '1-0', result: 'G', firstHalfCorners: 3, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('04.06.2025'), opponent: 'Inter Turku', score: '0-0', result: 'B', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 0, redCards: 0, location: 'Evde' },
+                  { date: formatDate('31.05.2025'), opponent: 'Ekenäs IF', score: '2-1', result: 'G', firstHalfCorners: 3, secondHalfCorners: 4, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('25.05.2025'), opponent: 'Gnistan', score: '0-2', result: 'G', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('18.05.2025'), opponent: 'SJK', score: '3-0', result: 'G', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 0, redCards: 0, location: 'Evde' },
+              ],
+              awayTeamRecentMatches: [
+                  { date: formatDate('08.06.2025'), opponent: 'Mariehamn', score: '2-0', result: 'G', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('04.06.2025'), opponent: 'AC Oulu', score: '2-0', result: 'G', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 0, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('31.05.2025'), opponent: 'VPS', score: '1-1', result: 'B', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('25.05.2025'), opponent: 'Haka', score: '1-2', result: 'G', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('18.05.2025'), opponent: 'HJK Helsinki', score: '0-1', result: 'M', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 2, redCards: 0, location: 'Deplasman' },
+              ],
+              homeTeamMissingPlayers: [
+                { name: 'Bazı oyuncular', status: 'Sakat/Milli Görevde', matchesPlayed: 0, startsInXI: 0 }
+              ],
+              awayTeamMissingPlayers: [
+                { name: 'Eksik oyuncu bilgisi bulunmamaktadır.', status: 'Yok', matchesPlayed: 0, startsInXI: 0 }
+              ]
+            },
+            { id: 9, home: 'Gimcheon Sangmu', away: 'Pohang Steelers', league: 'K-League 1', prediction: '1', aiSingle: '1', aiMulti: '1', aiCombinedRisk: '1', userPrediction1: '', userPrediction2: '',
+              matchDate: '18.06.2025', matchTime: '14:00', referee: { name: 'Ko Hyung-jin', rating: 'Yüksek', tendencies: 'Oyunu tutar' }, weather: { condition: 'Güneşli', temperature: '25°C', wind: 'Az' },
+              homeTeamRecentMatches: [
+                  { date: formatDate('08.06.2025'), opponent: 'Gangwon', score: '1-0', result: 'G', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('04.06.2025'), opponent: 'Ulsan Hyundai', score: '2-1', result: 'M', firstHalfCorners: 3, secondHalfCorners: 3, yellowCards: 0, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('31.05.2025'), opponent: 'Daegu', score: '2-0', result: 'G', firstHalfCorners: 3, secondHalfCorners: 4, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('25.05.2025'), opponent: 'Jeonbuk Motors', score: '0-1', result: 'G', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('18.05.2025'), opponent: 'FC Seoul', score: '1-2', result: 'M', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 2, redCards: 0, location: 'Evde' },
+              ],
+              awayTeamRecentMatches: [
+                  { date: formatDate('08.06.2025'), opponent: 'Incheon United', score: '0-0', result: 'B', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('04.06.2025'), opponent: 'Daegu', score: '1-0', result: 'M', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('31.05.2025'), opponent: 'Gwangju', score: '2-1', result: 'G', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 0, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('25.05.2025'), opponent: 'Suwon FC', score: '1-2', result: 'G', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('18.05.2025'), opponent: 'Jeju United', score: '0-1', result: 'M', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 2, redCards: 0, location: 'Deplasman' },
+              ],
+              homeTeamMissingPlayers: [
+                { name: 'Eksik oyuncu bilgisi bulunmamaktadır.', status: 'Yok', matchesPlayed: 0, startsInXI: 0 }
+              ],
+              awayTeamMissingPlayers: [
+                { name: 'Oberdan', status: 'Sakat (Ayak Bileği)', matchesPlayed: 20, startsInXI: 18 },
+                { name: 'Jo Seong-wook', status: 'Sakat (Ayak Bileği)', matchesPlayed: 10, startsInXI: 5 },
+                { name: 'An Jae-jun', status: 'Sakat (Hamstring)', matchesPlayed: 14, startsInXI: 10 },
+                { name: 'Wanderson', status: 'Sakat (Bilinmeyen)', matchesPlayed: 18, startsInXI: 16 }
+              ]
+            },
+            { id: 10, home: 'Jeju United', away: 'Daegu', league: 'K-League 1', prediction: 'X', aiSingle: 'X', aiMulti: '1X2', aiCombinedRisk: '1X2', userPrediction1: '', userPrediction2: '',
+              matchDate: '18.06.2025', matchTime: '15:30', referee: { name: 'Kim Woo-sung', rating: 'Düşük', tendencies: 'Kolay kart verir' }, weather: { condition: 'Parçalı Bulutlu', temperature: '22°C', wind: 'Orta' },
+              homeTeamRecentMatches: [
+                  { date: formatDate('08.06.2025'), opponent: 'Gwangju', score: '1-1', result: 'B', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('04.06.2025'), opponent: 'FC Seoul', score: '0-1', result: 'G', firstHalfCorners: 3, secondHalfCorners: 3, yellowCards: 2, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('31.05.2025'), opponent: 'Suwon FC', score: '2-0', result: 'G', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('25.05.2025'), opponent: 'Ulsan Hyundai', score: '3-3', result: 'B', firstHalfCorners: 3, secondHalfCorners: 4, yellowCards: 0, redCards: 0, location: 'Evde' },
+                  { date: formatDate('18.05.2025'), opponent: 'Pohang Steelers', score: '0-1', result: 'G', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+              ],
+              awayTeamRecentMatches: [
+                  { date: formatDate('08.06.2025'), opponent: 'Jeonbuk Motors', score: '0-2', result: 'M', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('04.06.2025'), opponent: 'Pohang Steelers', score: '1-0', result: 'M', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('31.05.2025'), opponent: 'Gimcheon Sangmu', score: '2-0', result: 'M', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 2, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('25.05.2025'), opponent: 'Incheon United', score: '1-1', result: 'B', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 0, redCards: 0, location: 'Evde' },
+                  { date: formatDate('18.05.2025'), opponent: 'Gangwon', score: '2-1', result: 'M', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+              ],
+              homeTeamMissingPlayers: [
+                { name: 'Dong-Jun Kim', status: 'Sakat (Omuz)', matchesPlayed: 10, startsInXI: 7 },
+                { name: 'In-Soo Yu', status: 'Sakat (MCL Yırtığı)', matchesPlayed: 18, startsInXI: 15 },
+                { name: 'Chang-Min Lee', status: 'Sakat (Ayak)', matchesPlayed: 20, startsInXI: 19 },
+                { name: 'Yuri Jonathan', status: 'Sakat (Adduktör Kas Yırtığı)', matchesPlayed: 12, startsInXI: 8 },
+                { name: 'Evandro', status: 'Sakat (Gerilme)', matchesPlayed: 15, startsInXI: 12 }
+              ],
+              awayTeamMissingPlayers: [
+                { name: 'Oh Seung-hoon', status: 'Sakat (El - Kaleci)', matchesPlayed: 5, startsInXI: 4 },
+                { name: 'Lee Yong-rae', status: 'Sakat (Bilinmeyen)', matchesPlayed: 14, startsInXI: 10 },
+                { name: 'Kim Jin-hyuk', status: 'Sakat (Ayak)', matchesPlayed: 8, startsInXI: 5 },
+                { name: 'Cesinha', status: 'Sakat (Şüpheli)', matchesPlayed: 22, startsInXI: 20 }
+              ]
+            },
+            { id: 11, home: 'Suwon FC', away: 'Anyang', league: 'K-League 1', prediction: '1', aiSingle: '1', aiMulti: '1', aiCombinedRisk: '1', userPrediction1: '', userPrediction2: '',
+              matchDate: '19.06.2025', matchTime: '13:00', referee: { name: 'Kim Jong-hyeok', rating: 'Yüksek', tendencies: 'Tecrübeli, oyunu iyi okur' }, weather: { condition: 'Rüzgarlı', temperature: '20°C', wind: 'Kuvvetli' },
+              homeTeamRecentMatches: [
+                  { date: formatDate('08.06.2025'), opponent: 'Daejeon Citizen', score: '1-1', result: 'B', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('04.06.2025'), opponent: 'Pohang Steelers', score: '1-2', result: 'M', firstHalfCorners: 3, secondHalfCorners: 3, yellowCards: 0, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('31.05.2025'), opponent: 'Jeju United', score: '2-0', result: 'M', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('25.05.2025'), opponent: 'Gangwon', score: '2-1', result: 'G', firstHalfCorners: 3, secondHalfCorners: 4, yellowCards: 0, redCards: 0, location: 'Evde' },
+                  { date: formatDate('18.05.2025'), opponent: 'Ulsan Hyundai', score: '0-1', result: 'G', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Evde' },
+              ],
+              awayTeamRecentMatches: [
+                  { date: formatDate('08.06.2025'), opponent: 'Cheonan City', score: '0-1', result: 'M', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('04.06.2025'), opponent: 'Chungnam Asan', score: '1-1', result: 'B', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 0, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('31.05.2025'), opponent: 'Busan IPark', score: '2-0', result: 'G', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('25.05.2025'), opponent: 'Gyeongnam', score: '1-2', result: 'G', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('18.05.2025'), opponent: 'Gimcheon Sangmu', score: '0-1', result: 'M', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 2, redCards: 0, location: 'Evde' },
+              ],
+              homeTeamMissingPlayers: [
+                { name: 'Pablo Sabbag', status: 'Sakat (Ayak Bileği)', matchesPlayed: 15, startsInXI: 10 },
+                { name: 'Luan Da Silva', status: 'Sakat (Bilinmeyen)', matchesPlayed: 8, startsInXI: 4 },
+                { name: 'Mohamed Ofkir', status: 'Sakat (Gerilme)', matchesPlayed: 12, startsInXI: 9 }
+              ],
+              awayTeamMissingPlayers: [
+                { name: 'Ji Dong-won', status: 'Sakat (Hamstring - Yakın Gelecekte Oynamayabilir)', matchesPlayed: 18, startsInXI: 15 }
+              ]
+            },
+            { id: 12, home: 'Albirex Niigata', away: 'Yokohama Marinos', league: 'J1 League', prediction: '1', aiSingle: '1', aiMulti: '1', aiCombinedRisk: '1', userPrediction1: '', userPrediction2: '',
+              matchDate: '19.06.2025', matchTime: '14:30', referee: { name: 'Ryuji Sato', rating: 'Çok Yüksek', tendencies: 'Oyunu okuma becerisi yüksek' }, weather: { condition: 'Nemli', temperature: '26°C', wind: 'Yok' },
+              homeTeamRecentMatches: [
+                  { date: formatDate('08.06.2025'), opponent: 'Tokyo Verdy', score: '0-0', result: 'B', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('04.06.2025'), opponent: 'Kawasaki Frontale', score: '2-1', result: 'M', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 0, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('31.05.2025'), opponent: 'Sanfrecce Hiroshima', score: '1-0', result: 'G', firstHalfCorners: 3, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('25.05.2025'), opponent: 'Urawa Red Diamonds', score: '2-0', result: 'M', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('18.05.2025'), opponent: 'Cerezo Osaka', score: '0-1', result: 'M', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 2, redCards: 0, location: 'Evde' },
+              ],
+              awayTeamRecentMatches: [
+                  { date: formatDate('08.06.2025'), opponent: 'Kashima Antlers', score: '1-0', result: 'G', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('04.06.2025'), opponent: 'FC Tokyo', score: '2-0', result: 'M', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('31.05.2025'), opponent: 'Avispa Fukuoka', score: '3-1', result: 'G', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 0, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('25.05.2025'), opponent: 'Nagoya Grampus', score: '2-0', result: 'M', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('18.05.2025'), opponent: 'Kashiwa Reysol', score: '0-2', result: 'M', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 2, redCards: 0, location: 'Deplasman' },
+              ],
+              homeTeamMissingPlayers: [
+                { name: 'D. Martens', status: 'Sakat (Bilinmeyen)', matchesPlayed: 10, startsInXI: 5 },
+                { name: 'H. Sunny', status: 'Sakat (Kasık)', matchesPlayed: 18, startsInXI: 15 },
+                { name: 'A. Recha', status: 'Sakat (Bilinmeyen)', matchesPlayed: 12, startsInXI: 8 },
+                { name: 'Y. Takahagi', status: 'Sakat (Baldır/Parmak/Diz)', matchesPlayed: 20, startsInXI: 17 },
+                { name: 'Y. Otake', status: 'Sakat (Apandisit/Çapraz Bağ)', matchesPlayed: 5, startsInXI: 2 }
+              ],
+              awayTeamMissingPlayers: [
+                { name: 'Sandy Walsh', status: 'Sakat', matchesPlayed: 22, startsInXI: 20 }
+              ]
+            },
+            { id: 13, home: 'Tokyo Verdy', away: 'Kashiwa Reysol', league: 'J1 League', prediction: '2', aiSingle: '2', aiMulti: '1X2', aiCombinedRisk: 'X2', userPrediction1: '', userPrediction2: '',
+              matchDate: '19.06.2025', matchTime: '15:00', referee: { name: 'Yusuke Araki', rating: 'Orta', tendencies: 'Fiziksel oyuna izin verir' }, weather: { condition: 'Güneşli', temperature: '24°C', wind: 'Hafif' },
+              homeTeamRecentMatches: [
+                  { date: formatDate('08.06.2025'), opponent: 'Albirex Niigata', score: '0-0', result: 'B', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('04.06.2025'), opponent: 'Sanfrecce Hiroshima', score: '1-2', result: 'M', firstHalfCorners: 3, secondHalfCorners: 3, yellowCards: 0, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('31.05.2025'), opponent: 'Urawa Red Diamonds', score: '2-1', result: 'M', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('25.05.2025'), opponent: 'Shonan Bellmare', score: '2-0', result: 'G', firstHalfCorners: 3, secondHalfCorners: 4, yellowCards: 0, redCards: 0, location: 'Evde' },
+                  { date: formatDate('18.05.2025'), opponent: 'FC Tokyo', score: '1-0', result: 'M', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+              ],
+              awayTeamRecentMatches: [
+                  { date: formatDate('08.06.2025'), opponent: 'Cerezo Osaka', score: '2-1', result: 'G', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('04.06.2025'), opponent: 'Gamba Osaka', score: '0-0', result: 'B', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 0, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('31.05.2025'), opponent: 'Vissel Kobe', score: '1-0', result: 'G', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('25.05.2025'), opponent: 'Yokohama Marinos', score: '2-0', result: 'G', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('18.05.2025'), opponent: 'Kawasaki Frontale', score: '0-1', result: 'M', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 2, redCards: 0, location: 'Deplasman' },
+              ],
+              homeTeamMissingPlayers: [
+                { name: 'Goki Yamada', status: 'Sakat (Diz Bağları Yırtığı)', matchesPlayed: 10, startsInXI: 7 },
+                { name: 'Maaya Sako', status: 'Sakat (Çapraz Bağ Sakatlığı)', matchesPlayed: 5, startsInXI: 3 },
+                { name: 'Kaito Chida', status: 'Sakat (Hamstring)', matchesPlayed: 15, startsInXI: 12 }
+              ],
+              awayTeamMissingPlayers: [
+                { name: 'Eksik oyuncu bilgisi bulunmamaktadır.', status: 'Yok', matchesPlayed: 0, startsInXI: 0 }
+              ]
+            },
+            { id: 14, home: 'Vissel Kobe', away: 'Nagoya Grampus', league: 'J1 League', prediction: '1', aiSingle: '1', aiMulti: '1', aiCombinedRisk: '1', userPrediction1: '', userPrediction2: '',
+              matchDate: '20.06.2025', matchTime: '13:00', referee: { name: 'Jumpei Iida', rating: 'Yüksek', tendencies: 'Kararlı, tecrübeli' }, weather: { condition: 'Bulutlu', temperature: '20°C', wind: 'Hafif' },
+              homeTeamRecentMatches: [
+                  { date: formatDate('08.06.2025'), opponent: 'Shonan Bellmare', score: '1-0', result: 'G', firstHalfCorners: 3, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('04.06.2025'), opponent: 'Avispa Fukuoka', score: '2-0', result: 'M', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 0, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('31.05.2025'), opponent: 'Kashiwa Reysol', score: '1-0', result: 'M', firstHalfCorners: 3, secondHalfCorners: 4, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('25.05.2025'), opponent: 'Kawasaki Frontale', score: '2-1', result: 'G', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('18.05.2025'), opponent: 'Sanfrecce Hiroshima', score: '0-1', result: 'G', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 2, redCards: 0, location: 'Deplasman' },
+              ],
+              awayTeamRecentMatches: [
+                  { date: formatDate('08.06.2025'), opponent: 'Cerezo Osaka', score: '1-1', result: 'B', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('04.06.2025'), opponent: 'Kashima Antlers', score: '2-0', result: 'M', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('31.05.2025'), opponent: 'FC Tokyo', score: '0-1', result: 'M', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 0, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('25.05.2025'), opponent: 'Yokohama Marinos', score: '2-0', result: 'G', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('18.05.2025'), opponent: 'Shonan Bellmare', score: '1-1', result: 'B', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 2, redCards: 0, location: 'Evde' },
+              ],
+              homeTeamMissingPlayers: [
+                { name: 'Gotoku Sakai', status: 'Sakat (Uyluk ve Kalça Kası Gerilmesi)', matchesPlayed: 20, startsInXI: 18 },
+                { name: 'Klismahn', status: 'Sakat (Bilinmeyen)', matchesPlayed: 10, startsInXI: 6 }
+              ],
+              awayTeamMissingPlayers: [
+                { name: 'Daniel Schmidt', status: 'Sakat (Menisküs - Kaleci)', matchesPlayed: 15, startsInXI: 14 },
+                { name: 'Yuya Yamagishi', status: 'Sakat (Diz İç Yan Bağ Yırtığı)', matchesPlayed: 18, startsInXI: 16 }
+              ]
+            },
+            { id: 15, home: 'Shimizu S-Pulse', away: 'Gamba Osaka', league: 'J1 League', prediction: 'X', aiSingle: 'X', aiMulti: 'X', aiCombinedRisk: '1X', userPrediction1: '', userPrediction2: '',
+              matchDate: '20.06.2025', matchTime: '15:00', referee: { name: 'Masaaki Iemoto', rating: 'İyi', tendencies: 'Tecrübeli, oyunu iyi okur' }, weather: { condition: 'Hafif Yağmurlu', temperature: '17°C', wind: 'Hafif' },
+              homeTeamRecentMatches: [
+                  { date: formatDate('08.06.2025'), opponent: 'Jubilo Iwata', score: '1-1', result: 'B', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('04.06.2025'), opponent: 'Gamba Osaka', score: '0-0', result: 'B', firstHalfCorners: 3, secondHalfCorners: 3, yellowCards: 0, redCards: 0, location: 'Evde' },
+                  { date: formatDate('31.05.2025'), opponent: 'Kashiwa Reysol', score: '0-1', result: 'M', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('25.05.2025'), opponent: 'Kawasaki Frontale', score: '2-1', result: 'G', firstHalfCorners: 3, secondHalfCorners: 4, yellowCards: 0, redCards: 0, location: 'Evde' },
+                  { date: formatDate('18.05.2025'), opponent: 'Sanfrecce Hiroshima', score: '0-2', result: 'M', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+              ],
+              awayTeamRecentMatches: [
+                  { date: formatDate('08.06.2025'), opponent: 'Consadole Sapporo', score: '2-0', result: 'G', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('04.06.2025'), opponent: 'Shimizu S-Pulse', score: '0-0', result: 'B', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 0, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('31.05.2025'), opponent: 'Tokyo Verdy', score: '1-2', result: 'G', firstHalfCorners: 2, secondHalfCorners: 3, yellowCards: 1, redCards: 0, location: 'Evde' },
+                  { date: formatDate('25.05.2025'), opponent: 'Cerezo Osaka', score: '0-1', result: 'M', firstHalfCorners: 1, secondHalfCorners: 2, yellowCards: 1, redCards: 0, location: 'Deplasman' },
+                  { date: formatDate('18.05.2025'), opponent: 'Kashima Antlers', score: '2-0', result: 'M', firstHalfCorners: 2, secondHalfCorners: 2, yellowCards: 2, redCards: 0, location: 'Evde' },
+              ],
+              homeTeamMissingPlayers: [
+                { name: 'Takım kadrosunda değişiklikler', status: 'Sakatlık/Yorgunluk/Ceza', matchesPlayed: 0, startsInXI: 0 }
+              ],
+              awayTeamMissingPlayers: [
+                { name: 'Ricardo', status: 'Sakat (Diz İltihabı)', matchesPlayed: 10, startsInXI: 7 },
+                { name: 'T. Nagai', status: 'Sakat (Baldır)', matchesPlayed: 15, startsInXI: 12 },
+                { name: 'S. Tamura', status: 'Sakat (Uyluk)', matchesPlayed: 8, startsInXI: 5 },
+                { name: 'T. Hiraoka', status: 'Sakat (Hamstring)', matchesPlayed: 12, startsInXI: 9 },
+                { name: 'Welton', status: 'Sakat (Ayak Bileği Bağları Yırtığı)', matchesPlayed: 20, startsInXI: 18 }
+              ]
+            },
+        ];
+
+        function calculateCouponPrice(couponBodyId) {
+            let totalCombinations = 1;
+            const targetUserPredictionField = couponBodyId === 'user-coupon-1-body' ? 'userPrediction1' : 'userPrediction2';
+            
+            matchesData.forEach(match => {
+                let prediction = match[targetUserPredictionField];
+                if (prediction.length === 0) { // If no selection, assume 1 combination for calculation
+                    totalCombinations *= 1;
+                } else if (prediction.length === 1) {
+                    totalCombinations *= 1;
+                } else if (prediction.length === 2) {
+                    totalCombinations *= 2;
+                } else if (prediction.length === 3) {
+                    totalCombinations *= 3;
+                }
+            });
+            const price = totalCombinations * 10;
+
+            const priceElement = document.getElementById(`${couponBodyId.replace('-body', '')}-price`);
+            if (priceElement) {
+                priceElement.textContent = `Maliyet: ${price} TL`;
+            } else {
+                console.error(`Error: Price element with ID '${couponBodyId.replace('-body', '')}-price' not found.`);
+            }
+        }
+
+
+        function populatePredictionTable() {
+            const tbody = document.getElementById('prediction-table-body');
+            tbody.innerHTML = '';
+            matchesData.forEach((match, index) => {
+                const row = document.createElement('tr');
+                row.className = `border-b border-white/10 cursor-pointer transform transition-transform duration-200 ease-in-out active:scale-[0.98] hover:scale-[1.01]`;
+                row.dataset.home = match.home;
+                row.dataset.away = match.away;
+                row.dataset.prediction = match.prediction;
+                row.dataset.matchId = match.id;
+
+                row.innerHTML = `
+                    <td class="p-3 sm:p-4">${match.id}</td>
+                    <td class="p-3 sm:p-4">${match.home}</td>
+                    <td class="p-3 sm:p-4">${match.away}</td>
+                    <td class="p-3 sm:p-4 text-center">
+                        <span class="prediction-badge">${match.prediction}</span>
+                    </td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        function populateAICoupons() {
+            const aiSingleBody = document.getElementById('ai-single-coupon-body');
+            const aiMultiBody = document.getElementById('ai-multi-coupon-body');
+            const aiCombinedRiskBody = document.getElementById('ai-combined-risk-coupon-body');
+            
+            aiSingleBody.innerHTML = '';
+            aiMultiBody.innerHTML = '';
+            aiCombinedRiskBody.innerHTML = '';
+
+            matchesData.forEach(match => {
+                const singleRow = document.createElement('tr');
+                singleRow.className = `border-b border-white/10`;
+                singleRow.innerHTML = `
+                    <td class="p-3 sm:p-4">${match.id}</td>
+                    <td class="p-3 sm:p-4">${match.home}</td>
+                    <td class="p-3 sm:p-4">${match.away}</td>
+                    <td class="p-3 sm:p-4 text-center prediction-cell">
+                        <span class="prediction-badge">${match.aiSingle}</span>
+                    </td>
+                `;
+                aiSingleBody.appendChild(singleRow);
+
+                const multiRow = document.createElement('tr');
+                multiRow.className = `border-b border-white/10`;
+                multiRow.innerHTML = `
+                    <td class="p-3 sm:p-4">${match.id}</td>
+                    <td class="p-3 sm:p-4">${match.home}</td>
+                    <td class="p-3 sm:p-4">${match.away}</td>
+                    <td class="p-3 sm:p-4 text-center prediction-cell">
+                        <span class="prediction-badge">${match.aiMulti}</span>
+                    </td>
+                `;
+                aiMultiBody.appendChild(multiRow);
+
+                const combinedRiskRow = document.createElement('tr');
+                combinedRiskRow.className = `border-b border-white/10`;
+                combinedRiskRow.innerHTML = `
+                    <td class="p-3 sm:p-4">${match.id}</td>
+                    <td class="p-3 sm:p-4">${match.home}</td>
+                    <td class="p-3 sm:p-4">${match.away}</td>
+                    <td class="p-3 sm:p-4 text-center prediction-cell">
+                        <span class="prediction-badge">${match.aiCombinedRisk}</span>
+                    </td>
+                `;
+                aiCombinedRiskBody.appendChild(combinedRiskRow);
+            });
+
+            calculateCouponPrice('ai-single-coupon-body');
+            calculateCouponPrice('ai-multi-coupon-body');
+            calculateCouponPrice('ai-combined-risk-coupon-body');
+        }
+
+        function populateUserCoupon(couponBodyId) {
+            const tbody = document.getElementById(couponBodyId);
+            tbody.innerHTML = '';
+            const targetUserPredictionField = couponBodyId === 'user-coupon-1-body' ? 'userPrediction1' : 'userPrediction2';
+
+            matchesData.forEach(match => {
+                const row = document.createElement('tr');
+                row.className = `border-b border-white/10`;
+                const cellElement = document.createElement('div');
+                cellElement.className = 'empty-cell';
+                cellElement.dataset.matchId = match.id;
+                cellElement.dataset.couponId = couponBodyId;
+                cellElement.textContent = match[targetUserPredictionField];
+                
+                if (match[targetUserPredictionField].length === 1) {
+                    cellElement.classList.add('selected-prediction');
+                } else if (match[targetUserPredictionField].length === 2) {
+                    cellElement.classList.add('selected-prediction', 'double');
+                } else if (match[targetUserPredictionField].length === 3) {
+                    cellElement.classList.add('selected-prediction', 'triple');
+                }
+
+                row.innerHTML = `
+                    <td class="p-3 sm:p-4">${match.id}</td>
+                    <td class="p-3 sm:p-4">${match.home}</td>
+                    <td class="p-3 sm:p-4">${match.away}</td>
+                    <td class="p-3 sm:p-4 text-center"></td>
+                `;
+                row.querySelector('td:last-child').appendChild(cellElement);
+                tbody.appendChild(row);
+            });
+
+            tbody.querySelectorAll('.empty-cell').forEach(cell => {
+                cell.addEventListener('click', (event) => {
+                    const matchId = parseInt(event.target.dataset.matchId);
+                    const currentCouponId = event.target.dataset.couponId;
+                    togglePrediction(matchId, event.target, currentCouponId);
+                });
+            });
+            calculateCouponPrice(couponBodyId);
+        }
+
+        function togglePrediction(matchId, cellElement, couponBodyId) {
+            const matchIndex = matchesData.findIndex(m => m.id === matchId);
+            if (matchIndex === -1) return;
+
+            const targetUserPredictionField = couponBodyId === 'user-coupon-1-body' ? 'userPrediction1' : 'userPrediction2';
+
+            let currentPrediction = matchesData[matchIndex][targetUserPredictionField];
+            const validPredictions = ['', '1', 'X', '2', '1X', '12', 'X2', '1X2'];
+            let nextPredictionIndex = (validPredictions.indexOf(currentPrediction) + 1) % validPredictions.length;
+
+            matchesData[matchIndex][targetUserPredictionField] = validPredictions[nextPredictionIndex];
+            
+            cellElement.textContent = matchesData[matchIndex][targetUserPredictionField];
+            cellElement.className = 'empty-cell'; // Reset classes
+            if (matchesData[matchIndex][targetUserPredictionField].length === 1) {
+                cellElement.classList.add('selected-prediction');
+            } else if (matchesData[matchIndex][targetUserPredictionField].length === 2) {
+                cellElement.classList.add('selected-prediction', 'double');
+            } else if (matchesData[matchIndex][targetUserPredictionField].length === 3) {
+                cellElement.classList.add('selected-prediction', 'triple');
+            }
+            
+            calculateCouponPrice(couponBodyId);
+        }
+
+        function wrapLabels(label, maxWidth) {
+            const words = label.split(' ');
+            let lines = [];
+            let currentLine = words[0];
+
+            for (let i = 1; i < words.length; i++) {
+                if (currentLine.length + words[i].length + 1 < maxWidth) {
+                    currentLine += ' ' + words[i];
+                } else {
+                    lines.push(currentLine);
+                    currentLine = words[i];
+                }
+            }
+            lines.push(currentLine);
+            return lines;
+        }
+
+        const tooltipConfig = {
+            plugins: {
+                tooltip: {
+                    callbacks: {
+                        title: function(tooltipItems) {
+                            const item = tooltipItems[0];
+                            let label = item.chart.data.labels[item.dataIndex];
+                            return Array.isArray(label) ? label.join(' ') : label;
+                        }
+                    }
+                }
+            }
+        };
+
+        const chartDefaultOptions = {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    labels: {
+                        color: chartTextColor,
+                        font: {
+                           family: "'Inter', sans-serif"
+                        }
+                    }
+                },
+                tooltip: {
+                     ...tooltipConfig.plugins.tooltip,
+                    backgroundColor: '#004369',
+                    titleColor: chartTextColor,
+                    bodyColor: chartTextColor,
+                    borderColor: secondaryColor,
+                    borderWidth: 1,
+                    titleFont: { family: "'Inter', sans-serif", weight: 'bold'},
+                    bodyFont: { family: "'Inter', sans-serif"}
+                }
+            },
+            scales: {
+                y: {
+                    ticks: { color: chartTextColor, beginAtZero: true },
+                    grid: { color: gridColor }
+                },
+                x: {
+                    ticks: { color: chartTextColor },
+                    grid: { color: gridColor }
+                }
+            }
+        };
+
+        new Chart(document.getElementById('leagueDistributionChart'), {
+            type: 'doughnut',
+            data: {
+                labels: ['FIFA Kulüpler Dünya Kupası', 'Finlandiya Veikkausliiga', 'K-League 1', 'J1 League'],
+                datasets: [{
+                    label: 'Maç Sayısı',
+                    data: [5, 3, 3, 4],
+                    backgroundColor: [primaryColor, secondaryColor, accentColor1, accentColor2],
+                    borderColor: '#0B1C2A',
+                    borderWidth: 4
+                }]
+            },
+            options: { ...chartDefaultOptions, scales: {} }
+        });
+        
+        const confidenceLabels = [
+            wrapLabels('Al Ahly vs Inter Miami', 16), 
+            wrapLabels('Bayern vs Auckland', 16), 
+            wrapLabels('PSG vs Atletico', 16),
+            wrapLabels('Palmeiras vs Porto', 16),
+            wrapLabels('Jeju vs Daegu', 16),
+            wrapLabels('Vissel Kobe vs Nagoya', 16),
+        ];
+
+        new Chart(document.getElementById('confidenceChart'), {
+            type: 'bar',
+            data: {
+                labels: confidenceLabels,
+                datasets: [
+                {
+                    label: 'Ev Sahibi (1)',
+                    data: [16, 87, 66, 25, 27, 75],
+                    backgroundColor: secondaryColor,
+                    borderColor: secondaryColor,
+                    borderWidth: 1
+                },
+                {
+                    label: 'Beraberlik (X)',
+                    data: [17, 8, 20, 23, 32, 15],
+                    backgroundColor: tertiaryColor,
+                    borderColor: tertiaryColor,
+                    borderWidth: 1
+                },
+                {
+                    label: 'Deplasman (2)',
+                    data: [67, 5, 14, 52, 41, 10],
+                    backgroundColor: primaryColor,
+                    borderColor: primaryColor,
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                ...chartDefaultOptions,
+                indexAxis: 'y', 
+                 scales: {
+                    y: {
+                        ticks: { color: chartTextColor },
+                        grid: { color: gridColor },
+                        stacked: true
+                    },
+                    x: {
+                        ticks: { color: chartTextColor, callback: (value) => value + '%' },
+                        grid: { color: gridColor },
+                        stacked: true
+                    }
+                },
+            }
+        });
+        
+        new Chart(document.getElementById('injuryChart'), {
+            type: 'bar',
+            data: {
+                labels: [
+                    wrapLabels('Al Ahly', 16),
+                    wrapLabels('Inter Miami CF', 16),
+                    wrapLabels('Bayern Münih', 16),
+                    wrapLabels('Seattle Sounders', 16),
+                    wrapLabels('Jeju United', 16),
+                    wrapLabels('Tokyo Verdy', 16)
+                ],
+                datasets: [{
+                    label: 'Önemli Sakat Oyuncu Sayısı',
+                    data: [6, 6, 8, 10, 5, 3], 
+                    backgroundColor: primaryColor,
+                    borderColor: primaryColor,
+                    borderWidth: 1,
+                    borderRadius: 5
+                }]
+            },
+            options: {
+                ...chartDefaultOptions,
+                plugins: { ...chartDefaultOptions.plugins, legend: { display: false } },
+                 scales: {
+                    y: {
+                        ticks: { color: chartTextColor, stepSize: 1 },
+                        grid: { color: gridColor }
+                    },
+                    x: {
+                        ticks: { color: chartTextColor },
+                        grid: { display: false }
+                    }
+                },
+            }
+        });
+
+        const commentaryModal = document.getElementById('commentaryModal');
+        const modalTitle = document.getElementById('modalTitle');
+        const modalContent = document.getElementById('modalContent');
+        const modalLoader = document.getElementById('modalLoader');
+        const closeModalBtn = document.getElementById('closeModalBtn');
+        const predictionTableBody = document.getElementById('prediction-table-body');
+
+        const matchDateInfo = document.getElementById('matchDateInfo');
+        const matchTimeInfo = document.getElementById('matchTimeInfo');
+        const refereeInfo = document.getElementById('refereeInfo');
+        const weatherInfo = document.getElementById('weatherInfo');
+
+        const recentMatchesSection = document.getElementById('recent-matches-section');
+        const homeTeamFormTitle = document.getElementById('homeTeamFormTitle');
+        const homeTeamFormList = document.getElementById('homeTeamFormList');
+        const awayTeamFormTitle = document.getElementById('awayTeamFormTitle');
+        const awayTeamFormList = document.getElementById('awayTeamFormList');
+
+        const missingPlayersSection = document.getElementById('missing-players-section');
+        const homeTeamMissingTitle = document.getElementById('homeTeamMissingTitle');
+        const homeTeamMissingList = document.getElementById('homeTeamMissingList');
+        const awayTeamMissingTitle = document.getElementById('awayTeamMissingTitle');
+        const awayTeamMissingList = document.getElementById('awayTeamMissingList');
+
+
+        const couponAnalysisModal = document.getElementById('couponAnalysisModal');
+        const closeCouponModalBtn = document.getElementById('closeCouponModalBtn');
+        const couponModalLoader = document.getElementById('couponModalLoader');
+        const couponModalContent = document.getElementById('couponModalContent');
+        const analyzeCouponBtn = document.getElementById('analyzeCouponBtn');
+
+        const playerAnalysisSection = document.getElementById('player-analysis-section');
+        const playerImportanceLoader = document.getElementById('player-importance-loader');
+        const playerImportanceText = document.getElementById('player-importance-text');
+        const analyzeAlternativeScenarioBtn = document.getElementById('analyzeAlternativeScenarioBtn');
+
+        const saveUserCoupon1Btn = document.getElementById('saveUserCoupon1Btn');
+        const loadUserCoupon1Btn = document.getElementById('loadUserCoupon1Btn');
+        const saveUserCoupon2Btn = document.getElementById('saveUserCoupon2Btn');
+        const loadUserCoupon2Btn = document.getElementById('loadUserCoupon2Btn');
+
+
+        async function generateCommentary(homeTeam, awayTeam, prediction, matchId) {
+            modalTitle.textContent = `${homeTeam} vs ${awayTeam} - Tahmin: ${prediction}`;
+            modalTitle.dataset.matchId = matchId; // Store matchId for alternative scenario
+            modalContent.textContent = '';
+            playerAnalysisSection.classList.add('hidden');
+            playerImportanceText.textContent = ''; // Clear previous player analysis
+            modalLoader.style.display = 'block';
+            commentaryModal.style.display = 'flex';
+            recentMatchesSection.classList.add('hidden');
+            missingPlayersSection.classList.add('hidden');
+            homeTeamFormList.innerHTML = '';
+            awayTeamFormList.innerHTML = '';
+            homeTeamMissingList.innerHTML = '';
+            awayTeamMissingList.innerHTML = '';
+
+
+            const match = matchesData.find(m => m.id === matchId);
+            if (match) {
+                // Populate match info section
+                matchDateInfo.innerHTML = `<strong>Tarih:</strong> ${match.matchDate || 'N/A'}`;
+                matchTimeInfo.innerHTML = `<strong>Saat:</strong> ${match.matchTime || 'N/A'}`;
+                refereeInfo.innerHTML = `<strong>Hakem:</strong> ${match.referee.name || 'N/A'} (Derece: ${match.referee.rating || 'N/A'}, Eğilim: ${match.referee.tendencies || 'N/A'})`;
+                weatherInfo.innerHTML = `<strong>Hava Durumu:</strong> ${match.weather.condition || 'N/A'}, Sıcaklık: ${match.weather.temperature || 'N/A'}, Rüzgar: ${match.weather.wind || 'N/A'}`;
+
+                // Populate recent matches section
+                recentMatchesSection.classList.remove('hidden');
+                homeTeamFormTitle.textContent = `${homeTeam} Formu:`;
+                awayTeamFormTitle.textContent = `${awayTeam} Formu:`;
+
+                match.homeTeamRecentMatches.forEach(game => {
+                    const listItem = document.createElement('li');
+                    let resultClass = '';
+                    if (game.result === 'G') resultClass = 'form-win';
+                    else if (game.result === 'B') resultClass = 'form-draw';
+                    else if (game.result === 'M') resultClass = 'form-loss';
+
+                    const totalCorners = (game.firstHalfCorners || 0) + (game.secondHalfCorners || 0);
+                    const locationIconClass = game.location === 'Evde' ? 'location-icon' : 'location-icon away';
+                    const locationText = game.location === 'Evde' ? '🏠 Evde' : '✈️ Deplasman';
+
+                    listItem.innerHTML = `
+                        <span class="form-dot ${resultClass}"></span>
+                        ${game.date}: ${game.opponent} <span class="score">${game.score}</span> <span class="${locationIconClass}">${locationText}</span><br>
+                        <span class="match-stats"><strong>Kornerler (İY/2Y/Toplam):</strong> ${game.firstHalfCorners || 'N/A'}/${game.secondHalfCorners || 'N/A'}/${totalCorners}</span><br>
+                        <span class="match-stats"><strong>Kartlar:</strong> ${game.yellowCards || 0} Sarı, ${game.redCards || 0} Kırmızı</span>
+                    `;
+                    homeTeamFormList.appendChild(listItem);
+                });
+
+                match.awayTeamRecentMatches.forEach(game => {
+                    const listItem = document.createElement('li');
+                    let resultClass = '';
+                    if (game.result === 'G') resultClass = 'form-win';
+                    else if (game.result === 'B') resultClass = 'form-draw';
+                    else if (game.result === 'M') resultClass = 'form-loss';
+
+                    const totalCorners = (game.firstHalfCorners || 0) + (game.secondHalfCorners || 0);
+                    const locationIconClass = game.location === 'Evde' ? 'location-icon' : 'location-icon away';
+                    const locationText = game.location === 'Evde' ? '🏠 Evde' : '✈️ Deplasman';
+
+                    listItem.innerHTML = `
+                        <span class="form-dot ${resultClass}"></span>
+                        ${game.date}: ${game.opponent} <span class="score">${game.score}</span> <span class="${locationIconClass}">${locationText}</span><br>
+                        <span class="match-stats"><strong>Kornerler (İY/2Y/Toplam):</strong> ${game.firstHalfCorners || 'N/A'}/${game.secondHalfCorners || 'N/A'}/${totalCorners}</span><br>
+                        <span class="match-stats"><strong>Kartlar:</strong> ${game.yellowCards || 0} Sarı, ${game.redCards || 0} Kırmızı</span>
+                    `;
+                    awayTeamFormList.appendChild(listItem);
+                });
+
+                // Populate missing players section
+                if (match.homeTeamMissingPlayers && match.homeTeamMissingPlayers.length > 0 ||
+                    match.awayTeamMissingPlayers && match.awayTeamMissingPlayers.length > 0) {
+                    missingPlayersSection.classList.remove('hidden');
+                    homeTeamMissingTitle.textContent = `${homeTeam} Eksikler:`;
+                    awayTeamMissingTitle.textContent = `${awayTeam} Eksikler:`;
+
+                    match.homeTeamMissingPlayers.forEach(player => {
+                        const listItem = document.createElement('li');
+                        listItem.className = 'text-[#E5DDC8] text-sm';
+
+                        let playerInfoHtml = `<span class="font-semibold">${player.name}</span> (<span class="status-red">${player.status}</span>)`;
+                        
+                        if ((player.matchesPlayed !== undefined && player.matchesPlayed > 0) || 
+                            (player.startsInXI !== undefined && player.startsInXI > 0)) {
+                            playerInfoHtml += `<span class="player-stats-detail">Lig Maçı: ${player.matchesPlayed || 'N/A'}, İlk 11: ${player.startsInXI || 'N/A'}</span>`;
+                        } else if (player.matchesPlayed === 0 && player.startsInXI === 0 && player.status === 'Oyuncuların amatör statüsü') {
+                            playerInfoHtml += ``;
+                        } else if (player.matchesPlayed === 0 && player.startsInXI === 0 && player.status === 'Yok') {
+                             playerInfoHtml += ``;
+                        }
+                         else if (player.matchesPlayed === 0 && player.startsInXI === 0 && player.status === 'Sakatlıktan dönüyor') {
+                             playerInfoHtml += ``;
+                        }
+                         else if (player.matchesPlayed === 0 && player.startsInXI === 0 && player.status === 'Sakat/Milli Görevde') {
+                             playerInfoHtml += ``;
+                        }
+                         else if (player.matchesPlayed === 0 && player.startsInXI === 0 && player.status === 'Milli Takım Arasında') {
+                             playerInfoHtml += ``;
+                        }
+                         else if (player.matchesPlayed === 0 && player.startsInXI === 0 && player.status === 'Hastalık (Gastrointestinal Semptomlar)') {
+                             playerInfoHtml += ``;
+                        }
+                         else if (player.matchesPlayed === 0 && player.startsInXI === 0 && player.status === 'Sakatlık/Yorgunluk/Ceza') {
+                             playerInfoHtml += ``;
+                        }
+
+                        listItem.innerHTML = playerInfoHtml;
+                        homeTeamMissingList.appendChild(listItem);
+                    });
+
+                    match.awayTeamMissingPlayers.forEach(player => {
+                        const listItem = document.createElement('li');
+                        listItem.className = 'text-[#E5DDC8] text-sm';
+
+                        let playerInfoHtml = `<span class="font-semibold">${player.name}</span> (<span class="status-red">${player.status}</span>)`;
+                        
+                        if ((player.matchesPlayed !== undefined && player.matchesPlayed > 0) || 
+                            (player.startsInXI !== undefined && player.startsInXI > 0)) {
+                            playerInfoHtml += `<span class="player-stats-detail">Lig Maçı: ${player.matchesPlayed || 'N/A'}, İlk 11: ${player.startsInXI || 'N/A'}</span>`;
+                        } else if (player.matchesPlayed === 0 && player.startsInXI === 0 && player.status === 'Oyuncuların amatör statüsü') {
+                            playerInfoHtml += ``;
+                        } else if (player.matchesPlayed === 0 && player.startsInXI === 0 && player.status === 'Yok') {
+                             playerInfoHtml += ``;
+                        }
+                         else if (player.matchesPlayed === 0 && player.startsInXI === 0 && player.status === 'Sakatlıktan dönüyor') {
+                             playerInfoHtml += ``;
+                        }
+                         else if (player.matchesPlayed === 0 && player.startsInXI === 0 && player.status === 'Sakat/Milli Görevde') {
+                             playerInfoHtml += ``;
+                        }
+                         else if (player.matchesPlayed === 0 && player.startsInXI === 0 && player.status === 'Milli Takım Arasında') {
+                             playerInfoHtml += ``;
+                        }
+                         else if (player.matchesPlayed === 0 && player.startsInXI === 0 && player.status === 'Hastalık (Gastrointestinal Semptomlar)') {
+                             playerInfoHtml += ``;
+                        }
+                         else if (player.matchesPlayed === 0 && player.startsInXI === 0 && player.status === 'Sakatlık/Yorgunluk/Ceza') {
+                             playerInfoHtml += ``;
+                        }
+
+                        listItem.innerHTML = playerInfoHtml;
+                        awayTeamMissingList.appendChild(listItem);
+                    });
+                }
+            }
+
+            // Construct detailed prompt for AI commentary
+            let homeFormDetails = match.homeTeamRecentMatches.map(game => 
+                `${game.date} vs ${game.opponent} (${game.score}, ${game.result === 'G' ? 'Galibiyet' : game.result === 'B' ? 'Beraberlik' : 'Mağlubiyet'}, ${game.location === 'Evde' ? 'Evde' : 'Deplasman'}) - Kornerler: ${game.firstHalfCorners}+${game.secondHalfCorners}, Kartlar: ${game.yellowCards}S/${game.redCards}K`
+            ).join('; ');
+            let awayFormDetails = match.awayTeamRecentMatches.map(game => 
+                `${game.date} vs ${game.opponent} (${game.score}, ${game.result === 'G' ? 'Galibiyet' : game.result === 'B' ? 'Beraberlik' : 'Mağlubiyet'}, ${game.location === 'Evde' ? 'Evde' : 'Deplasman'}) - Kornerler: ${game.firstHalfCorners}+${game.secondHalfCorners}, Kartlar: ${game.yellowCards}S/${game.redCards}K`
+            ).join('; ');
+
+            let homeMissingPlayers = match.homeTeamMissingPlayers.length > 0 ? 
+                match.homeTeamMissingPlayers.map(p => `${p.name} (${p.status}, Lig Maçı: ${p.matchesPlayed}, İlk 11: ${p.startsInXI})`).join(', ') : 'Yok';
+            let awayMissingPlayers = match.awayTeamMissingPlayers.length > 0 ? 
+                match.awayTeamMissingPlayers.map(p => `${p.name} (${p.status}, Lig Maçı: ${p.matchesPlayed}, İlk 11: ${p.startsInXI})`).join(', ') : 'Yok';
+
+            const prompt = `Spor Toto maçı olan ${homeTeam} ile ${awayTeam} arasındaki maç için yorum yap. Tahminimiz ${prediction}.
+            
+            Maç Bilgileri:
+            Tarih: ${match.matchDate}, Saat: ${match.matchTime}
+            Hakem: ${match.referee.name} (Derece: ${match.referee.rating}, Eğilim: ${match.referee.tendencies})
+            Hava Durumu: ${match.weather.condition}, Sıcaklık: ${match.weather.temperature}, Rüzgar: ${match.weather.wind}
+
+            Takım Form Durumları (Son 5 Maç):
+            Ev Sahibi (${homeTeam}): ${homeFormDetails}
+            Deplasman (${awayTeam}): ${awayFormDetails}
+
+            Eksik ve Cezalı Oyuncular:
+            Ev Sahibi Eksikler: ${homeMissingPlayers}
+            Deplasman Eksikler: ${awayMissingPlayers}
+
+            Yukarıdaki tüm verileri (form durumları, eksik oyuncular, hakem eğilimleri, hava durumu) dikkate alarak, maçın genel durumu, takımların mevcut avantajları/dezavantajları ve tahmin ${prediction} için temel nedenler hakkında detaylı ve ikna edici bir maç yorumu yap.
+            `;
+            
+            let chatHistory = [];
+            chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+            const payload = { contents: chatHistory };
+            const apiKey = "";
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+            try {
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+
+                if (result.candidates && result.candidates.length > 0 &&
+                    result.candidates[0].content && result.candidates[0].content.parts &&
+                    result.candidates[0].content.parts.length > 0) {
+                    const text = result.candidates[0].content.parts[0].text;
+                    modalContent.textContent = text;
+                } else {
+                    modalContent.textContent = 'Üzgünüz, bu maç için yorum alınamadı. Lütfen daha sonra tekrar deneyin.';
+                }
+            } catch (error) {
+                console.error('Gemini API hatası:', error);
+                modalContent.textContent = 'Bir hata oluştu, yorum alınamadı. İnternet bağlantınızı kontrol edin.';
+            } finally {
+                modalLoader.style.display = 'none';
+            }
+        }
+
+        async function analyzeCoupon() {
+            couponModalContent.textContent = '';
+            couponModalLoader.style.display = 'block';
+            couponAnalysisModal.style.display = 'flex';
+
+            const userCoupon1Selections = matchesData.map(match => match.userPrediction1);
+            const userCoupon2Selections = matchesData.map(match => match.userPrediction2);
+
+            const prompt = `Spor Toto kupon analizi yap. Birinci kuponun tahminleri: ${userCoupon1Selections.join(', ')}. İkinci kuponun tahminleri: ${userCoupon2Selections.join(', ')}. Bu kuponların güçlü ve zayıf yönlerini, risk ve kazanç potansiyellerini detaylı olarak değerlendir. Kupon maliyetlerini de belirt.`;
+
+            let chatHistory = [];
+            chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+            const payload = { contents: chatHistory };
+            const apiKey = "";
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+            try {
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+
+                if (result.candidates && result.candidates.length > 0 &&
+                    result.candidates[0].content && result.candidates[0].content.parts &&
+                    result.candidates[0].content.parts.length > 0) {
+                    const text = result.candidates[0].content.parts[0].text;
+                    couponModalContent.textContent = text;
+                } else {
+                    couponModalContent.textContent = 'Üzgünüz, kupon analizi alınamadı. Lütfen daha sonra tekrar deneyin.';
+                }
+            } catch (error) {
+                console.error('Gemini API hatası:', error);
+                couponModalContent.textContent = 'Bir hata oluştu, kupon analizi alınamadı. İnternet bağlantınızı kontrol edin.';
+            } finally {
+                couponModalLoader.style.display = 'none';
+            }
+        }
+        
+        async function analyzePlayerImportance(homeTeam, awayTeam) {
+            playerAnalysisSection.classList.remove('hidden');
+            playerImportanceText.textContent = '';
+            playerImportanceLoader.classList.remove('hidden');
+
+            const prompt = `${homeTeam} ve ${awayTeam} takımlarının maç öncesi mevcut kadrolarında yer alan önemli eksik oyuncuları (sakat veya cezalı) ve bu oyuncuların takıma olan etkilerini detaylı olarak analiz et.`;
+            
+            let chatHistory = [];
+            chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+            const payload = { contents: chatHistory };
+            const apiKey = "";
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+            try {
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+
+                if (result.candidates && result.candidates.length > 0 &&
+                    result.candidates[0].content && result.candidates[0].content.parts &&
+                    result.candidates[0].content.parts.length > 0) {
+                    const text = result.candidates[0].content.parts[0].text;
+                    playerImportanceText.textContent = text;
+                } else {
+                    playerImportanceText.textContent = 'Üzgünüz, oyuncu analizi alınamadı. Lütfen daha sonra tekrar deneyin.';
+                }
+            } catch (error) {
+                console.error('Gemini API hatası:', error);
+                playerImportanceText.textContent = 'Bir hata oluştu, oyuncu analizi alınamadı. İnternet bağlantınızı kontrol edin.';
+            } finally {
+                playerImportanceLoader.classList.add('hidden');
+            }
+        }
+
+        async function analyzeAlternativeScenario(homeTeam, awayTeam, currentPrediction) {
+            modalContent.textContent = '';
+            modalLoader.style.display = 'block';
+            modalTitle.textContent = `${homeTeam} vs ${awayTeam} - Sürpriz Senaryo Analizi`;
+            recentMatchesSection.classList.add('hidden');
+            missingPlayersSection.classList.add('hidden');
+
+
+            const prompt = `${homeTeam} ve ${awayTeam} arasındaki maçın mevcut tahmini ${currentPrediction}. Bu tahminin tersine, sürpriz bir sonucun (${currentPrediction === '1' ? 'X veya 2' : currentPrediction === 'X' ? '1 veya 2' : '1 veya X'}) ortaya çıkmasına neden olabilecek olası senaryoları ve dikkat edilmesi gereken faktörleri detaylı olarak analiz et. Örneğin, beklenmedik oyuncu performansları, hakem kararları, taktiksel değişiklikler veya hava koşulları gibi faktörlere değin.`;
+            
+            let chatHistory = [];
+            chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+            const payload = { contents: chatHistory };
+            const apiKey = "";
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+            try {
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+
+                if (result.candidates && result.candidates.length > 0 &&
+                    result.candidates[0].content && result.candidates[0].content.parts &&
+                    result.candidates[0].content.parts.length > 0) {
+                    const text = result.candidates[0].content.parts[0].text;
+                    modalContent.textContent = text;
+                } else {
+                    modalContent.textContent = 'Üzgünüz, sürpriz senaryo analizi alınamadı. Lütfen daha sonra tekrar deneyin.';
+                }
+            } catch (error) {
+                console.error('Gemini API hatası:', error);
+                modalContent.textContent = 'Bir hata oluştu, sürpriz senaryo analizi alınamadı. İnternet bağlantınızı kontrol edin.';
+            } finally {
+                modalLoader.style.display = 'none';
+            }
+        }
+
+
+        predictionTableBody.addEventListener('click', (event) => {
+            const row = event.target.closest('tr');
+            if (row) {
+                const homeTeam = row.dataset.home;
+                const awayTeam = row.dataset.away;
+                const prediction = row.dataset.prediction;
+                const matchId = parseInt(row.dataset.matchId);
+                if (homeTeam && awayTeam && prediction && !isNaN(matchId)) {
+                    generateCommentary(homeTeam, awayTeam, prediction, matchId);
+                }
+            }
+        });
+
+        closeModalBtn.addEventListener('click', () => {
+            commentaryModal.style.display = 'none';
+        });
+
+        window.addEventListener('click', (event) => {
+            if (event.target == commentaryModal) {
+                commentaryModal.style.display = 'none';
+            }
+            if (event.target == couponAnalysisModal) {
+                couponAnalysisModal.style.display = 'none';
+            }
+        });
+
+        analyzeCouponBtn.addEventListener('click', analyzeCoupon);
+
+        closeCouponModalBtn.addEventListener('click', () => {
+            couponAnalysisModal.style.display = 'none';
+        });
+
+        analyzeAlternativeScenarioBtn.addEventListener('click', () => {
+            const currentMatchId = parseInt(document.getElementById('modalTitle').dataset.matchId); 
+            const currentMatch = matchesData.find(m => m.id === currentMatchId);
+            if (currentMatch) {
+                analyzeAlternativeScenario(currentMatch.home, currentMatch.away, currentMatch.prediction);
+            } else {
+                showMessage("Hata", "Maç bilgisi bulunamadı.");
+            }
+        });
+
+        // Save/Load Coupon Functions
+        async function saveUserCoupon(couponNumber) {
+            if (!window.db || !window.userId || !window.appId || !window.isAuthReady) {
+                showMessage("Hata", "Kupon kaydedilemedi. Kimlik doğrulama hazır değil veya kullanıcı oturumu açılamadı.");
+                console.error("Firebase not initialized or user not authenticated.");
+                return;
+            }
+            if (window.auth.currentUser.isAnonymous) {
+                showMessage("Bilgi", "Kuponları kaydetmek için lütfen giriş yapın veya yeni bir hesap oluşturun.");
+                return;
+            }
+
+            const couponData = matchesData.map(match => ({
+                id: match.id,
+                userPrediction: couponNumber === 1 ? match.userPrediction1 : match.userPrediction2
+            }));
+
+            try {
+                const userDocRef = doc(window.db, `artifacts/${window.appId}/users/${window.userId}/coupons`, `user_coupon_${couponNumber}`);
+                await setDoc(userDocRef, { predictions: JSON.stringify(couponData), savedAt: new Date() });
+                showMessage("Başarılı", `Kupon ${couponNumber} başarıyla kaydedildi!`);
+            } catch (error) {
+                console.error("Kupon kaydedilirken hata oluştu:", error);
+                showMessage("Hata", `Kupon ${couponNumber} kaydedilirken bir sorun oluştu: ${error.message}`);
+            }
+        }
+
+        async function loadUserCoupon(couponNumber) {
+            if (!window.db || !window.userId || !window.appId || !window.isAuthReady) {
+                showMessage("Hata", "Kupon yüklenemedi. Kimlik doğrulama hazır değil veya kullanıcı oturumu açılamadı.");
+                console.error("Firebase not initialized or user not authenticated.");
+                return;
+            }
+            if (window.auth.currentUser.isAnonymous) {
+                showMessage("Bilgi", "Kuponları yüklemek için lütfen giriş yapın.");
+                return;
+            }
+
+            try {
+                const userDocRef = doc(window.db, `artifacts/${window.appId}/users/${window.userId}/coupons`, `user_coupon_${couponNumber}`);
+                const docSnap = await getDoc(userDocRef);
+
+                if (docSnap.exists()) {
+                    const loadedData = JSON.parse(docSnap.data().predictions);
+                    loadedData.forEach(loadedMatch => {
+                        const matchIndex = matchesData.findIndex(m => m.id === loadedMatch.id);
+                        if (matchIndex !== -1) {
+                            if (couponNumber === 1) {
+                                matchesData[matchIndex].userPrediction1 = loadedMatch.userPrediction;
+                            } else {
+                                matchesData[matchIndex].userPrediction2 = loadedMatch.userPrediction;
+                            }
+                        }
+                    });
+                    populateUserCoupon(couponNumber === 1 ? 'user-coupon-1-body' : 'user-coupon-2-body');
+                    showMessage("Başarılı", `Kupon ${couponNumber} başarıyla yüklendi!`);
+                } else {
+                    showMessage("Bilgi", `Kupon ${couponNumber} için kayıtlı veri bulunamadı.`);
+                }
+            } catch (error) {
+                console.error("Kupon yüklenirken hata oluştu:", error);
+                showMessage("Hata", `Kupon ${couponNumber} yüklenirken bir sorun oluştu: ${error.message}`);
+            }
+        }
+
+
+        saveUserCoupon1Btn.addEventListener('click', () => saveUserCoupon(1));
+        loadUserCoupon1Btn.addEventListener('click', () => loadUserCoupon(1));
+        saveUserCoupon2Btn.addEventListener('click', () => saveUserCoupon(2));
+        loadUserCoupon2Btn.addEventListener('click', () => loadUserCoupon(2));
+
+
+        function scrollToSection(sectionId) {
+            const section = document.getElementById(sectionId);
+            if (section) {
+                section.scrollIntoView({ behavior: 'smooth' });
+            } else if (sectionId === 'body') {
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+        }
+
+        // Wait for Firebase to be ready before initializing UI that depends on it
+        document.addEventListener('firebaseAuthReady', () => {
+            // Assign global Firebase variables to local script scope once ready
+            db = window.db;
+            auth = window.auth;
+            userId = window.userId;
+            appId = window.appId;
+            isAuthReady = window.isAuthReady;
+
+            // Populate UI elements
+            populatePredictionTable();
+            populateAICoupons();
+            populateUserCoupon('user-coupon-1-body');
+            populateUserCoupon('user-coupon-2-body');
+
+            // Initial UI update based on Firebase auth state
+            updateAuthUI(auth.currentUser);
+        });
+
+    </script>
+</body>
+</html>
